@@ -12,7 +12,7 @@ company's SEC filings.
 | Backend           | Node 24 + Hono, TypeScript ESM |
 | Orchestration     | `@langchain/langgraph` (StateGraph) |
 | LLM               | `@langchain/anthropic` — `claude-sonnet-5` (synthesis), `claude-haiku-4-5` (sub-agents) |
-| Embeddings        | `@huggingface/transformers`, `Xenova/all-MiniLM-L6-v2`, **384 dims**, local, no API key |
+| Embeddings        | `@huggingface/transformers`, `Xenova/all-MiniLM-L6-v2`, **384 dims**, local, no API key. Set `EMBEDDER=local`; otherwise a deterministic 384d `HashEmbedder` is used so tests and offline runs work. |
 | Vector DB         | **Pinecone** (`@pinecone-database/pinecone`), namespace per ticker, cosine |
 | SEC filings       | `sec-edgar-toolkit` |
 | Quotes            | `yahoo-finance2` (v3 — `new YahooFinance()`) |
@@ -48,6 +48,14 @@ Copy `.env.example` to `.env`. `ANTHROPIC_API_KEY` and `PINECONE_API_KEY` are
 **not** set in this environment. Everything must therefore be built behind
 interfaces with working offline fakes, so `pnpm test` passes with zero
 credentials and zero network.
+
+## Build scripts
+
+pnpm 10+ blocks dependency postinstall scripts. `pnpm-workspace.yaml` carries an
+`allowBuilds` list for the packages that genuinely need them (esbuild,
+onnxruntime-node, protobufjs, sharp). Without it `pnpm install` exits 1 with
+`ERR_PNPM_IGNORED_BUILDS`. If pnpm ever appends duplicate `set this to true or
+false` placeholder keys to that file, delete those lines — they are invalid YAML.
 
 ## SEC etiquette
 
