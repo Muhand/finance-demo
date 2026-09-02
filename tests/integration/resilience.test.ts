@@ -147,6 +147,33 @@ describe("partial EDGAR failure — accession readable, filing bodies not", () =
     return runAsk(ask(), h.deps);
   }
 
+  it("serves the cached research and says so with the honest reason code", async () => {
+    const warm = await runAsk(ask(), h.deps);
+    const baseline = researchWorkCounts(h);
+    h.setLatestAccession(NEWER_ACCESSION);
+    h.failFilingFetch();
+
+    const res = await runAsk(ask(), h.deps);
+    expect(() => AskResponseSchema.parse(res)).not.toThrow();
+
+    // "upstream-unavailable-stale", not "no-new-filings-reused": no check ever
+    // confirmed whether new filings exist, and the client must be able to tell.
+    expect(res.cache.reason).toBe("upstream-unavailable-stale");
+    expect(res.cache.filingsReused).toBe(true);
+    expect(res.cache.researchedAt).not.toBeNull();
+
+    // The cached research is served intact...
+    expect(res.subAnswers).toEqual(warm.subAnswers);
+    expect(res.filings).toEqual(warm.filings);
+    // ...for free. The failed fetch ATTEMPT is unavoidable — it is how the
+    // outage is discovered — so compare only the work that costs money or time.
+    const { filingFetch: _attempted, ...after } = researchWorkCounts(h);
+    const { filingFetch: _before, ...expected } = baseline;
+    expect(after).toEqual(expected);
+    // ...and the quote is still fresh, as on every other path.
+    expect(res.quote).not.toBeNull();
+  });
+
   it("does not claim citations for filings absent from the response", async () => {
     const res = await warmThenPartiallyFail(h);
     // Whatever the degradation strategy, the payload must be internally

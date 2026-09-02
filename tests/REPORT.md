@@ -10,36 +10,30 @@ Everything that would is injected (`Deps`) or stubbed in `tests/helpers/harness.
 
 ```
 pnpm --filter @finance-demo/tests test
-  Test Files   2 failed | 10 passed (12)
-       Tests   4 failed | 119 passed (123)
+  Test Files   12 passed (12)
+       Tests   127 passed (127)
 
 pnpm --filter @finance-demo/tests typecheck   ->  clean, 0 errors
 ```
 
-| Suite | File | Tests | Result |
-|---|---|---:|---|
-| contract | `contract/fixtures.test.ts` | 8 | pass |
-| contract | `contract/ask-request.test.ts` | 9 | pass |
-| contract | `contract/ticker-directory.test.ts` | 6 | pass |
-| contract | `contract/transport.test.ts` | 5 | pass |
-| unit | `unit/chunking.test.ts` | 20 | **19 pass / 1 fail** (DEFECT-1) |
-| unit | `unit/tickers.test.ts` | 15 | pass |
-| unit | `unit/embeddings.test.ts` | 9 | pass |
-| unit | `unit/vectorstore.test.ts` | 8 | pass |
-| unit | `unit/cache.test.ts` | 8 | pass |
-| integration | `integration/graph.test.ts` | 15 | pass |
-| integration | `integration/http.test.ts` | 10 | pass |
-| integration | `integration/resilience.test.ts` | 10 | **7 pass / 3 fail** (DEFECT-3) |
+**All green.** Both defects QA raised were fixed during this run and are verified
+fixed here — verified by measurement, not by taking the fix reports at face
+value. Details in the defect log below.
 
-The 4 failures are two real defects, described below. They are left failing
-deliberately; no test was weakened to make the suite green.
-
-**DEFECT-2 was fixed by the backend during this run (`feat/backend` 83b1fba) and
-is verified fixed here** — a total EDGAR outage with no cached research now
-throws `UPSTREAM_SEC_ERROR` and returns 502, and I independently confirmed it
-fails *before* spending anything: question-generation, sub-agent, embed and
-upsert counts are all 0 on that path (they were 4 Anthropic calls before). Both
-tests now pass and carry a permanent zero-spend regression guard.
+| Suite | File | Tests |
+|---|---|---:|
+| contract | `contract/fixtures.test.ts` | 9 |
+| contract | `contract/ask-request.test.ts` | 9 |
+| contract | `contract/ticker-directory.test.ts` | 6 |
+| contract | `contract/transport.test.ts` | 5 |
+| unit | `unit/chunking.test.ts` | 22 |
+| unit | `unit/tickers.test.ts` | 15 |
+| unit | `unit/embeddings.test.ts` | 9 |
+| unit | `unit/vectorstore.test.ts` | 8 |
+| unit | `unit/cache.test.ts` | 8 |
+| integration | `integration/graph.test.ts` | 15 |
+| integration | `integration/http.test.ts` | 10 |
+| integration | `integration/resilience.test.ts` | 11 |
 
 **Verified working** (worth stating, because these were the risky parts):
 
@@ -54,32 +48,31 @@ tests now pass and carry a permanent zero-spend regression guard.
   never appears in the `generateResearchQuestions` payload, and the payload's
   `filings` entries carry exactly `formType` / `filingDate` / `periodOfReport` /
   `sections`, with `sections` holding section names only.
+- **Every degraded path is distinguishable from every other**, which was the
+  through-line of both defects: a total outage with no usable cache throws
+  `UPSTREAM_SEC_ERROR` (502) having spent nothing; an outage with usable cache
+  serves it as `upstream-unavailable-stale`; a company that genuinely has no
+  filings returns 200 with `filings: []`; and a healthy reuse is
+  `no-new-filings-reused`. A client can tell all four apart.
+- **The citation invariant**: no sub-answer ever cites an accession absent from
+  `filings`, on any path.
 - Quote failure degrades to `quote: null` with a 200 and intact research.
 - A corrupt cache file is ignored rather than fatal; a cached record with zero
   sub-answers correctly rebuilds as `cache-miss-rebuilt`; a traversing ticker
   (`../../escaped`) does not write outside the cache directory.
-- `chunkText` handles the `String.prototype.slice(-0)` trap correctly
-  (`overlap: 0` yields plain slicing, not duplicated chunks).
+- `chunkText` is lossless and surrogate-safe, and handles the
+  `String.prototype.slice(-0)` trap (`overlap: 0` yields plain slicing).
 - `filterTickers` honours `limit: 0` (i.e. `limit ?? 25`, not `limit || 25`).
-- A total EDGAR outage now fails fast with `UPSTREAM_SEC_ERROR` / 502 and zero
-  LLM spend, while a company that legitimately has no filings still returns 200
-  with `filings: []` — the outage and the empty state are distinguishable.
 
 ### Reproducing these numbers
 
-`feat/qa` deliberately contains **no files outside `tests/`**. To run the Phase 2
-and Phase 3 suites you need `apps/api` present in the same worktree:
-
 ```
-git merge feat/backend     # or: git archive feat/backend apps/api | tar -x -C .
 pnpm install
 pnpm --filter @finance-demo/tests test
 ```
 
 Backend modules are resolved through the vitest alias `@api/*` ->
-`apps/api/src/*`, not through the package `exports` map. The `pnpm-lock.yaml`
-in this worktree is untracked on purpose — see the gaps section.
-
+`apps/api/src/*`, not through the package `exports` map.
 
 ## How the suites are wired
 
@@ -246,161 +239,128 @@ quote refetched?" is directly observable.
 - error bodies contain no credential names or key prefixes
 - an unknown path -> 404
 
-## Defects and spec deviations
+## Defect log
 
-Three failing tests, two distinct defects.
+Both defects found during this run have been fixed and independently verified.
+Recorded here because the reproductions are the regression tests, and because
+the reasoning behind the severity calls is worth keeping.
 
 ---
 
-### DEFECT-1 — `chunkText` splits surrogate pairs, corrupting astral characters
+### DEFECT-1 — RESOLVED — `chunkText` split surrogate pairs
 
-**Severity:** Medium (silent data corruption; low frequency in practice)
-**File:** `apps/api/src/chunking.ts`, `chunkText`
-**Test:** `tests/unit/chunking.test.ts` -> *"every chunk survives a UTF-8
-round-trip — no chunk boundary corrupts a character"*
+**Was:** Medium. Chunk boundaries landed inside UTF-16 surrogate pairs, leaving
+lone surrogates that became `U+FFFD` the moment a chunk was UTF-8 encoded — the
+HTTP body, the embedding request, and the on-disk research cache. The snippet
+shown to the user and the text that was embedded were not what was filed.
 
-**Expected:** every chunk is a well-formed string, so
-`Buffer.from(chunk, "utf8").toString("utf8") === chunk`.
+Notably this was **not a backend mistake**: the implementation was faithful to
+the frozen spec ("slice into `size`-char pieces"), and an independent
+reimplementation from `docs/MODULE_MAP.md` corrupted identically. It was routed
+to the contract owner rather than patched locally, and the integrator ruled on
+the amendment.
 
-**Actual:** chunk boundaries land inside UTF-16 surrogate pairs, leaving lone
-surrogates at chunk edges. Chunks 0, 3 and 8 of the test input fail the
-round-trip. The lone surrogate becomes `U+FFFD` the moment the chunk is UTF-8
-encoded — which happens on the HTTP response body, on the way into an embedding
-request, and on the way into the on-disk research cache. So the citation snippet
-the user sees, and the text that was embedded, are not the text that was filed.
+**Fix:** `safeBoundary` nudges a boundary forward by one when it falls between a
+high and a low surrogate, applied to both the chunk end and the overlap prefix
+start. Chunk lengths become `size ± 1`.
 
-**Reproduce:**
+**How it was verified.** The original test only asserted that each chunk
+survives a UTF-8 round-trip, which the fix satisfies trivially. But nudging the
+boundaries means the overlap prefix is now `overlap` *or* `overlap - 1`
+characters, so the fixed-width reconstruction check no longer applies to astral
+text — the suite could have gone green while the fix silently dropped or
+duplicated characters. Two boundary-agnostic tests were added to close that:
 
-```js
-const text = "📈📉💹🧾🏦 quarterly results 🚀".repeat(40);
-const chunks = chunkText(text, { size: 100, overlap: 20 });
-Buffer.from(chunks[0], "utf8").toString("utf8") === chunks[0];  // false
-chunks[0].slice(-1).charCodeAt(0);                              // 0xD83D — lone high surrogate
-```
+- every chunk is a verbatim slice of the source and the chunks tile it with no
+  gap (`expectCoversLosslessly`, using non-repetitive astral text so each chunk
+  has exactly one position in the source);
+- consecutive chunks still genuinely share an overlap window, of `overlap` or
+  `overlap - 1` characters, taken from the end of the previous chunk.
 
-**Important nuance — this is a spec gap, not an implementation bug.** The
-implementation is *faithful* to the frozen spec ("slice into `size`-char
-pieces"), and an independent reimplementation of that spec from
-`docs/MODULE_MAP.md` reproduces the corruption identically. So the fix belongs
-to whoever owns the contract, not to the backend engineer acting alone.
+Both pass. The fix is lossless.
 
-**Suggested fix** (backend, ~3 lines, once the integrator agrees): after
-computing each boundary, nudge it forward by one if it lands between a high and
-a low surrogate.
-
-```ts
-const safe = (s: string, i: number) =>
-  i > 0 && i < s.length &&
-  s.charCodeAt(i - 1) >= 0xd800 && s.charCodeAt(i - 1) <= 0xdbff &&
-  s.charCodeAt(i) >= 0xdc00 && s.charCodeAt(i) <= 0xdfff
-    ? i + 1
-    : i;
-```
-
-This keeps every other invariant intact (chunk lengths become `size ± 1`, which
-the existing tests already allow, and lossless reconstruction still holds
-because the overlap prefix is computed from the same adjusted boundary). If the
-integrator instead decides code-unit slicing is acceptable, amend `CHUNKING` in
-`packages/contracts/src/index.ts` to say so explicitly and I will drop the test.
+**Migration consequence, flagged and actioned:** lone surrogates had already
+reached the embedded text and the on-disk cache, so a cache written before the
+fix stays corrupt after it. The integrator versioned the cache directory to
+`.data/research/v2`.
 
 ---
 
 ### DEFECT-2 — RESOLVED — a total EDGAR outage was reported as HTTP 200
 
-**Status:** fixed by the backend in `feat/backend` 83b1fba, independently
-verified here. `fetchFilings` now throws
-`AskError("UPSTREAM_SEC_ERROR", ...)` when the SEC calls hard-fail and the cache
-yields nothing usable, before `chunkAndEmbed` or `generateResearchQuestions` are
-scheduled; `server.ts` maps it to 502 with a contract-valid `ApiError` body.
+**Was:** Medium. With SEC unreachable and nothing cached, the request returned
+200 with `filings: []`, `reason: "cold-start"`, `lastAccession: null` — byte
+identical to a company that has legitimately never filed, so the frontend could
+not distinguish an outage from an empty state or offer a retry. It also spent
+four Anthropic calls producing an answer it simultaneously labelled ungrounded,
+and left `UPSTREAM_SEC_ERROR` unreachable in the frozen enum.
 
-Verified independently, not taken on trust: `runAsk` rejects with
-`code: "UPSTREAM_SEC_ERROR"`; `questionGen`, `subAgents`, `embed` and `upsert`
-call counts are all **0** on that path; a company that genuinely has no filings
-still returns 200 with `filings: []`; and the outage-with-warm-cache path is
-byte-for-byte unchanged and still passing. The zero-spend assertion is now a
-permanent regression guard in
-`tests/integration/resilience.test.ts`.
+**Fix:** `fetchFilings` throws `AskError("UPSTREAM_SEC_ERROR", ...)` when the SEC
+calls hard-fail and the cache yields nothing usable, before `chunkAndEmbed` or
+`generateResearchQuestions` are scheduled; `server.ts` maps it to 502.
+
+**Verified:** `runAsk` rejects with `code: "UPSTREAM_SEC_ERROR"`; HTTP returns
+502 with a contract-valid `ApiError`; and `questionGen`, `subAgents`, `embed`
+and `upsert` counts are all **0** on that path. The zero-spend assertion is kept
+as a permanent regression guard, so the early exit cannot quietly drift back
+behind the LLM calls.
 
 ---
 
-### DEFECT-3 — a partial EDGAR failure permanently poisons the research cache
+### DEFECT-3 — RESOLVED — a partial EDGAR failure permanently poisoned the cache
 
-**Severity:** High
-**File:** `apps/api/src/graph.ts` (new-filings branch + `persistResearch`)
-**Tests:** `tests/integration/resilience.test.ts` -> *"partial EDGAR failure —
-accession readable, filing bodies not"* (3 failing)
+**Was:** High. This started as a residual window the backend engineer disclosed
+and initially characterised as a narrow "ungrounded 200". Measuring it changed
+the severity, which is the reason it is worth recording.
 
-This is the residual window the backend engineer flagged and chose not to close.
-Having measured it, it is materially worse than "an ungrounded 200", and I think
-it now outranks DEFECT-1.
-
-**Setup:** `getLatestAccession` succeeds and reports a *new* accession, so the
+Scenario: `getLatestAccession` succeeds and reports a *new* accession, so the
 graph takes the new-filings branch; `getFilingRefs` then fails; usable prior
-research exists in the cache. (`tests/helpers/harness.ts` -> `failFilingFetch()`.)
+research exists. Three compounding problems:
 
-**Expected:** either serve the cached research, or fail with
-`UPSTREAM_SEC_ERROR`. Either way, do not record the new accession as researched.
+1. **It claimed to be grounded.** `filings: []`, yet all three sub-answers
+   returned `grounded: true`, citing accessions retrieved from the *previous*
+   run's vectors still resident in the namespace. The headline read *"3 of 3
+   research questions grounded in SEC filings."* No cited accession appeared in
+   `filings`, so a citation could not be linked to a filing.
+2. **It persisted an accession it never fetched** — `lastAccession` advanced to
+   the new accession alongside `filings: []`.
+3. **The damage was permanent.** After EDGAR recovered, the next request matched
+   the poisoned accession and returned `no-new-filings-reused` with zero
+   re-research, forever; the new filing was never ingested and the ticker served
+   `filings: []` until `.data/research` was cleared by hand. A transient blip
+   converted a self-healing condition into a permanent one. **That permanence,
+   not the single bad response, is what made this High.**
 
-**Actual — three compounding problems:**
+**Fix**, taken in the two halves QA suggested so the already-green reuse path
+was not disturbed: `persistResearch` refuses to advance `lastAccession` on any
+run whose fetch did not succeed, which removes the permanence on its own; then a
+conditional fan-out out of `fetchFilings` diverts to `loadCachedResearch`, so the
+cached research is served with `filingsReused: true` and the integrator's new
+`reason: "upstream-unavailable-stale"`. The citation invariant was additionally
+enforced at source — `runSubAgents` filters retrieval matches against the
+accessions in the current request's `filings` — rather than at the response
+boundary.
 
-1. **The response claims to be grounded when it is not, and is internally
-   inconsistent.** `filings: []`, yet all three sub-answers come back
-   `grounded: true`, citing accessions `…24-000123`, `…24-000081`,
-   `…24-000069` — retrieved from the *previous* run's vectors, which are still
-   sitting in the `AAPL` namespace. The summary headline reads
-   *"3 of 3 research questions grounded in SEC filings."* Every citation
-   references an accession that is absent from `filings`, so a frontend that
-   links a citation to its filing has nothing to link to.
+**Verified:** the degraded run reports `upstream-unavailable-stale` with
+`filingsReused: true` and a non-null `researchedAt`; the cached sub-answers and
+filings are served intact; no expensive work re-runs (only the failed fetch
+*attempt*, which is how the outage is discovered); the quote is still fresh;
+there are no orphan citations; the persisted `lastAccession` stays on the old
+accession; and once EDGAR recovers the new filing is researched and persisted.
 
-2. **It persists an accession it never fetched.** The cache record is written as
-   `lastAccession: "0000320193-25-000004"` with `filings: []` — claiming the new
-   10-Q was researched when nothing from it was ever fetched, embedded or read.
-
-3. **The damage is permanent, and this is the serious part.** Once EDGAR
-   recovers, the next request compares the (real) newest accession against the
-   poisoned `lastAccession`, finds them equal, and returns
-   `reason: "no-new-filings-reused"`, `filingsReused: true`, with **zero**
-   re-research — forever. Verified: after recovery, `embed`, `questionGen`,
-   `subAgents`, `filingFetch` are all 0 and `filings` stays empty. A transient
-   blip converts a self-healing condition into a permanent one; the new filing
-   is never ingested, and the ticker serves `filings: []` from then on. Only
-   manually clearing `.data/research` recovers it.
-
-**Reproduce:**
-
-```ts
-const h = await createHarness();
-await runAsk(req, h.deps);                     // warm cache, accession …24-000123
-h.setLatestAccession("0000320193-25-000004");  // a new filing appears
-h.failFilingFetch();                           // ...but its body can't be fetched
-await runAsk(req, h.deps);                     // 200, "3 of 3 grounded", filings: []
-(await h.cache.get("AAPL")).lastAccession;     // "0000320193-25-000004"  <-- poisoned
-// EDGAR recovers:
-(await runAsk(req, deps)).cache.reason;        // "no-new-filings-reused", 0 work done
-```
-
-**Suggested fix, smallest first.** The cheap half fixes the permanence without
-touching the graph's routing, which is what the backend was rightly wary of:
-in `persistResearch`, refuse to write `lastAccession` when the filing fetch did
-not succeed — keep the previously cached accession, so the next request retries
-naturally. That alone downgrades this from permanent corruption to one bad
-response. The fuller fix — re-routing mid-branch to `loadCachedResearch` when
-`getFilingRefs` fails and usable research exists — can follow separately, and
-the invariant in point 1 (every cited accession must appear in `filings`) is
-worth asserting in the graph regardless of which route is taken.
+**Contract note:** `"upstream-unavailable-stale"` was added to `CacheInfo.reason`
+by the integrator, in response to the observation below. The contract suite now
+asserts every reason value the graph can emit, and rejects unknown ones.
 
 ---
 
-### Observation (no test, no fix requested) — reason code when EDGAR is down but cached
+### Observation — RESOLVED
 
-When EDGAR is unreachable and prior research *is* cached, the response reports
-`reason: "no-new-filings-reused"`. Serving the cache is the right call, but the
-reason is slightly untrue: nothing confirmed there are no new filings — EDGAR
-was never reached. `CacheInfo.reason` has no enum value for "served stale
-because upstream was unavailable", so there is nothing better to return today.
-Flagging it for the contract owner; no test asserts it, because asserting it
-would mean inventing an enum value that is not in the frozen contract.
-
+QA flagged that serving stale research during an outage was being reported as
+`no-new-filings-reused`, which asserts a check that never happened;
+`CacheInfo.reason` had no honest value for it, so no test was written rather
+than invent an enum value outside the frozen contract. The integrator added
+`"upstream-unavailable-stale"` and it is now asserted on the degraded path.
 
 ## Gaps not covered
 
@@ -429,6 +389,8 @@ would mean inventing an enum value that is not in the frozen contract.
    (`filterTickers` already exists for it), but since the contract does not
    specify a `?q=` parameter, no test asserts one. Flagging it as a contract gap
    for the integrator rather than testing an unagreed interface.
-7. **`pnpm-lock.yaml`.** Deliberately not committed on `feat/qa`: all three
-   branches regenerate it, and committing three divergent lockfiles guarantees a
-   merge conflict. The integrator should generate one lockfile after merging.
+7. **Degraded-path timings.** The backend fixed `filingsMs` being overwritten
+   with `0` on the degraded route, which had hidden time actually spent failing.
+   No test asserts it: a meaningful threshold would be wall-clock dependent, and
+   the existing timings test (finite, non-negative, no leg exceeding the total)
+   already covers the shape.

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ApiErrorSchema,
   AskResponseSchema,
+  CacheInfoSchema,
   ChunkSchema,
   CitationSchema,
   FilingRefSchema,
@@ -70,6 +71,20 @@ describe("fixtures satisfy the frozen contract", () => {
       ApiErrorSchema.parse(e);
     }
     expect(INTERNAL_ERROR.error.detail).toBeNull();
+  });
+
+  it("accepts every CacheInfo reason the graph can emit, and rejects others", () => {
+    const base = { filingsReused: true, lastAccession: "0000320193-24-000123", researchedAt: null };
+    for (const reason of [
+      "cold-start",
+      "new-filings-detected",
+      "no-new-filings-reused",
+      "cache-miss-rebuilt",
+      "upstream-unavailable-stale",
+    ]) {
+      expect(CacheInfoSchema.safeParse({ ...base, reason }).success, reason).toBe(true);
+    }
+    expect(CacheInfoSchema.safeParse({ ...base, reason: "made-up" }).success).toBe(false);
   });
 
   it("rejects an unrecognised error code", () => {

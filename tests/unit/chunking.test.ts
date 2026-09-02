@@ -28,6 +28,28 @@ function reconstruct(chunks: string[], overlap: number): string {
   return chunks[0]! + chunks.slice(1).map((c) => c.slice(overlap)).join("");
 }
 
+/**
+ * Boundary-agnostic losslessness check. The surrogate-safety fix nudges a
+ * boundary forward by one when it would split a pair, so the overlap prefix is
+ * `overlap` OR `overlap - 1` characters and the fixed-width `reconstruct` above
+ * no longer applies to astral text. This instead proves the two properties that
+ * actually matter, whatever the boundaries are: every chunk is a verbatim slice
+ * of the source (nothing invented), and the chunks tile the source with no gap
+ * (nothing dropped).
+ */
+function expectCoversLosslessly(chunks: string[], text: string): void {
+  let covered = 0;
+  let searchFrom = 0;
+  for (const [i, c] of chunks.entries()) {
+    const at = text.indexOf(c, searchFrom);
+    expect(at, `chunk ${i} is not a verbatim slice of the source`).toBeGreaterThanOrEqual(0);
+    expect(at, `chunk ${i} leaves a gap — content was dropped`).toBeLessThanOrEqual(covered);
+    covered = Math.max(covered, at + c.length);
+    searchFrom = at;
+  }
+  expect(covered, "chunks do not reach the end of the source").toBe(text.length);
+}
+
 const SIZE = 100;
 const OVERLAP = 20;
 const opts = { size: SIZE, overlap: OVERLAP };
@@ -128,6 +150,34 @@ describe("chunkText — unicode safety", () => {
     const chunks = chunkText(bmpText, opts);
     expect(chunks.length).toBeGreaterThan(1);
     expect(reconstruct(chunks, OVERLAP)).toBe(bmpText);
+  });
+
+  it("drops nothing on astral text, whatever the adjusted boundaries are", () => {
+    // Non-repetitive so each chunk has exactly one position in the source.
+    const text = Array.from(
+      { length: 300 },
+      (_, i) => `📈${i} 研究開発費 🚀${i} café`,
+    ).join(" ");
+    const chunks = chunkText(text, opts);
+    expect(chunks.length).toBeGreaterThan(10);
+    expectCoversLosslessly(chunks, text);
+  });
+
+  it("consecutive chunks still share an overlap window on astral text", () => {
+    const text = Array.from(
+      { length: 300 },
+      (_, i) => `📈${i} 研究開発費 🚀${i} café`,
+    ).join(" ");
+    const chunks = chunkText(text, opts);
+    for (let i = 1; i < chunks.length; i++) {
+      // The window is `overlap` chars, or `overlap - 1` where the boundary was
+      // nudged off a surrogate pair. It must be one of the two, and it must
+      // genuinely come from the end of the previous chunk.
+      const shared = [OVERLAP, OVERLAP - 1].some((k) =>
+        chunks[i - 1]!.endsWith(chunks[i]!.slice(0, k)),
+      );
+      expect(shared, `chunk ${i} does not overlap chunk ${i - 1}`).toBe(true);
+    }
   });
 
   it("every chunk survives a UTF-8 round-trip — no chunk boundary corrupts a character", () => {
