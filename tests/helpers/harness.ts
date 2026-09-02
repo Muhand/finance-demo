@@ -48,6 +48,12 @@ export interface Harness {
   setFilings(filings: FilingRef[]): void;
   /** Make EDGAR unreachable, to test upstream failure handling. */
   failSec(message?: string): void;
+  /**
+   * Fail ONLY the filing-body fetch. `getLatestAccession` keeps working, so the
+   * graph decides there are new filings and then cannot fetch them — a partial
+   * EDGAR outage, distinct from the total outage `failSec` simulates.
+   */
+  failFilingFetch(message?: string): void;
   /** Make the quote provider reject, to test graceful degradation. */
   failQuote(message?: string): void;
   /**
@@ -77,8 +83,10 @@ export async function createHarness(): Promise<Harness> {
     if (secError) throw secError;
     return latestAccession;
   });
+  let filingFetchError: Error | null = null;
   const getFilingRefs = vi.fn(async (_cik: string, _opts?: unknown) => {
     if (secError) throw secError;
+    if (filingFetchError) throw filingFetchError;
     return filings;
   });
   const loadFilingSections = vi.fn(async (ref: FilingRef) =>
@@ -129,6 +137,9 @@ export async function createHarness(): Promise<Harness> {
     },
     failSec(message = "EDGAR upstream 503") {
       secError = new Error(message);
+    },
+    failFilingFetch(message = "EDGAR submissions 503") {
+      filingFetchError = new Error(message);
     },
     failQuote(message = "yahoo-finance2 upstream 503") {
       quoteError = new Error(message);
