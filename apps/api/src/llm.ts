@@ -321,14 +321,37 @@ export class AnthropicLlm implements Llm {
   #apiKey: string;
   #fallback = new StubLlm();
 
-  constructor(opts: { apiKey: string; synthesisModel?: string; subAgentModel?: string }) {
+  #workspaceId: string | undefined;
+
+  constructor(opts: {
+    apiKey: string;
+    synthesisModel?: string;
+    subAgentModel?: string;
+    workspaceId?: string;
+  }) {
     this.#apiKey = opts.apiKey;
     this.synthesisModel = opts.synthesisModel?.trim() || DEFAULT_SYNTHESIS_MODEL;
     this.subAgentModel = opts.subAgentModel?.trim() || DEFAULT_SUBAGENT_MODEL;
+    this.#workspaceId = opts.workspaceId?.trim() || undefined;
   }
 
   #chat(model: string, maxTokens: number): ChatAnthropic {
-    return new ChatAnthropic({ apiKey: this.#apiKey, model, temperature: 0, maxTokens });
+    return new ChatAnthropic({
+      apiKey: this.#apiKey,
+      model,
+      maxTokens,
+      // No `temperature`: sampling parameters are rejected with a 400 on
+      // Sonnet 5 / Opus 5 and the rest of the 4.7+ family.
+      ...(this.#workspaceId
+        ? {
+            // Identity-linked API keys must name the workspace the request
+            // acts in, or every call fails with a 400.
+            clientOptions: {
+              defaultHeaders: { "anthropic-workspace-id": this.#workspaceId },
+            },
+          }
+        : {}),
+    });
   }
 
   async #ask(model: string, maxTokens: number, system: string, user: string): Promise<string> {
@@ -377,7 +400,9 @@ export class AnthropicLlm implements Llm {
       if (questions.length >= MIN_RESEARCH_QUESTIONS) return questions;
       warn("AnthropicLlm returned too few research questions; padding with deterministic ones.");
     } catch (err) {
-      warn(`AnthropicLlm.generateResearchQuestions failed (${describe(err)}); using StubLlm plan.`);
+      // Configured but failing is NOT the offline path: substituting template
+      // text here would present generated filler as filing-grounded research.
+      throw new Error(`Anthropic generateResearchQuestions failed: ${describe(err)}`);
     }
     return this.#fallback.generateResearchQuestions(input);
   }
@@ -407,8 +432,7 @@ export class AnthropicLlm implements Llm {
         `Question: ${input.question}\n\nRetrieved passages:\n${context}`,
       );
     } catch (err) {
-      warn(`AnthropicLlm.answerFromContext failed (${describe(err)}); using StubLlm extract.`);
-      return this.#fallback.answerFromContext(input);
+      throw new Error(`Anthropic answerFromContext failed: ${describe(err)}`);
     }
   }
 
@@ -455,8 +479,7 @@ export class AnthropicLlm implements Llm {
       const parsed = parseJsonBlock(raw, LlmSummarySchema);
       return SummarySchema.parse(parsed);
     } catch (err) {
-      warn(`AnthropicLlm.synthesize failed (${describe(err)}); using StubLlm summary.`);
-      return this.#fallback.synthesize(input);
+      throw new Error(`Anthropic synthesize failed: ${describe(err)}`);
     }
   }
 }
@@ -473,6 +496,7 @@ export function createLlm(env: NodeJS.ProcessEnv = process.env): Llm {
       apiKey,
       synthesisModel: env.ANTHROPIC_SYNTHESIS_MODEL,
       subAgentModel: env.ANTHROPIC_SUBAGENT_MODEL,
+      workspaceId: env.ANTHROPIC_WORKSPACE_ID,
     });
   }
   warnOnce(
