@@ -11,7 +11,7 @@ company's SEC filings.
 | Package manager   | `pnpm` workspaces (never `npm`/`yarn`) |
 | Backend           | Node 24 + Hono, TypeScript ESM |
 | Orchestration     | `@langchain/langgraph` (StateGraph) |
-| LLM               | `@langchain/anthropic` — `claude-sonnet-5` (synthesis), `claude-haiku-4-5-20251001` (sub-agents) |
+| LLM               | `@langchain/anthropic` — `claude-sonnet-5` (synthesis), `claude-haiku-4-5` (sub-agents) |
 | Embeddings        | `@huggingface/transformers`, `Xenova/all-MiniLM-L6-v2`, **384 dims**, local, no API key |
 | Vector DB         | **Pinecone** (`@pinecone-database/pinecone`), namespace per ticker, cosine |
 | SEC filings       | `sec-edgar-toolkit` |
