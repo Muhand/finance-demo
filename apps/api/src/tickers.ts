@@ -1,22 +1,10 @@
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { TickerListSchema, type TickerEntry } from "@finance-demo/contracts";
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-
-function directoryPath(env: NodeJS.ProcessEnv = process.env): string {
-  const override = env.TICKERS_PATH?.trim();
-  if (override) return override;
-  try {
-    return createRequire(import.meta.url).resolve("@finance-demo/contracts/tickers.json");
-  } catch {
-    // Workspace layout fallback: apps/api/src -> packages/contracts/data
-    return path.resolve(HERE, "../../../packages/contracts/data/tickers.json");
-  }
-}
+// Statically imported so bundlers can resolve the directory at build time.
+// A dynamic readFileSync here makes Turbopack trace the entire project into the
+// serverless function, which fails the Next build.
+import bundledTickers from "@finance-demo/contracts/tickers.json";
 
 let directory: TickerEntry[] | null = null;
 let bySymbol: Map<string, TickerEntry> | null = null;
@@ -24,8 +12,11 @@ let bySymbol: Map<string, TickerEntry> | null = null;
 /** Loads (and memoizes) the preloaded SEC ticker directory. */
 export function loadTickerDirectory(): TickerEntry[] {
   if (directory) return directory;
-  const raw = readFileSync(directoryPath(), "utf8");
-  directory = TickerListSchema.parse(JSON.parse(raw));
+  const override = process.env.TICKERS_PATH?.trim();
+  const source: unknown = override
+    ? JSON.parse(readFileSync(/* turbopackIgnore: true */ override, "utf8"))
+    : bundledTickers;
+  directory = TickerListSchema.parse(source);
   bySymbol = new Map(directory.map((entry) => [entry.t.toUpperCase(), entry]));
   return directory;
 }

@@ -11,7 +11,9 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@finance-demo/api": "workspace:*",
     "@finance-demo/contracts": "workspace:*",
+    "hono": "^4.13.5",
     "next": "16.3.4",
     "react": "19.2.8",
     "react-dom": "19.2.8"

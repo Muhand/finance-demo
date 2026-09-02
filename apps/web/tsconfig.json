@@ -5,6 +5,9 @@
     "jsx": "preserve",
     "allowJs": true,
     "noEmit": true,
+    // apps/api ships raw TS and imports with explicit .ts specifiers
+    // (it runs on Node 24 type-stripping, no build step).
+    "allowImportingTsExtensions": true,
     "declaration": false,
     "incremental": true,
     "isolatedModules": true,

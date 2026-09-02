@@ -113,6 +113,13 @@ export class LocalEmbedder implements Embedder {
             { cause },
           );
         }
+        // Transformers.js caches model weights to disk on first use. On a
+        // read-only serverless filesystem that write fails, so point it at a
+        // writable directory (e.g. EMBEDDING_CACHE_DIR=/tmp/hf on Vercel).
+        const cacheDir = process.env.EMBEDDING_CACHE_DIR?.trim();
+        const transformersEnv = (mod as { env?: { cacheDir?: string } }).env;
+        if (cacheDir && transformersEnv) transformersEnv.cacheDir = cacheDir;
+
         const factory = mod.pipeline as
           | ((task: string, model: string) => Promise<FeatureExtractor>)
           | undefined;
