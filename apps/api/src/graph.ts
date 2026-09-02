@@ -77,6 +77,8 @@ const AskState = Annotation.Root({
   cache: Annotation<CacheInfo>,
   filings: Annotation<FilingRef[]>,
   sections: Annotation<FilingSections[]>,
+  /** True only when fetchFilings actually retrieved filings from EDGAR. */
+  filingsFetched: Annotation<boolean>,
   chunkCount: Annotation<number>,
   questions: Annotation<string[]>,
   subAnswers: Annotation<SubAnswer[]>,
@@ -209,15 +211,29 @@ export function buildGraph(deps: Deps) {
     /**
      * Reuse path: no fetch, no chunking, no embedding, no sub-agents.
      * Synthesis still re-runs against the fresh quote.
+     *
+     * Reached two ways:
+     *   1. the freshness gate found no new filings (state.hasNewFilings false);
+     *   2. new filings WERE detected but the fetch then failed, and prior
+     *      research exists. Serving that research is strictly better than
+     *      answering from a stale vector namespace, but the response must not
+     *      claim the reuse was because nothing changed.
      */
     .addNode("loadCachedResearch", async (state: AskStateType) => {
       const cached = await deps.cache.get(state.ticker);
+      const degraded = state.hasNewFilings;
       return {
         filings: cached?.filings ?? [],
         sections: [],
         questions: (cached?.subAnswers ?? []).map((s) => s.question),
         subAnswers: cached?.subAnswers ?? [],
         chunkCount: 0,
+        // filingsReused=true together with reason="new-filings-detected" is
+        // otherwise impossible, so it is an unambiguous signal that new
+        // filings exist but could not be retrieved on this request.
+        cache: degraded
+          ? { ...state.cache, filingsReused: true, researchedAt: cached?.researchedAt ?? null }
+          : state.cache,
         timings: { filingsMs: 0, embedMs: 0, questionGenMs: 0, subAgentsMs: 0 },
       };
     })
@@ -255,12 +271,25 @@ export function buildGraph(deps: Deps) {
             describe(err),
           );
         }
-        warnings.push(`EDGAR filing fetch failed: ${describe(err)}`);
-        filings = [];
-        sections = [];
+        // Prior research exists: fall through to loadCachedResearch rather
+        // than researching against a stale vector namespace.
+        warnings.push(`EDGAR filing fetch failed, serving cached research: ${describe(err)}`);
+        return {
+          filings: [],
+          sections: [],
+          filingsFetched: false,
+          warnings,
+          timings: { filingsMs: performance.now() - started },
+        };
       }
 
-      return { filings, sections, warnings, timings: { filingsMs: performance.now() - started } };
+      return {
+        filings,
+        sections,
+        filingsFetched: true,
+        warnings,
+        timings: { filingsMs: performance.now() - started },
+      };
     })
 
     .addNode("chunkAndEmbed", async (state: AskStateType) => {
@@ -332,6 +361,12 @@ export function buildGraph(deps: Deps) {
     .addNode("runSubAgents", async (state: AskStateType) => {
       const started = performance.now();
 
+      // Invariant: every citation must point at a filing present in
+      // `filings`, otherwise the client has nothing to link it to. A ticker's
+      // namespace can still hold vectors from an earlier run, so matches are
+      // filtered against this request's filings rather than trusted.
+      const known = new Set(state.filings.map((f) => f.accessionNumber));
+
       // One sub-agent per generated question, all in parallel. Each has
       // vector-store retrieval as its only tool.
       const subAnswers = await Promise.all(
@@ -340,7 +375,8 @@ export function buildGraph(deps: Deps) {
           try {
             const [vector] = await deps.embedder.embed([question]);
             if (vector) {
-              matches = await deps.store.query(state.ticker, vector, RETRIEVAL_TOP_K);
+              const found = await deps.store.query(state.ticker, vector, RETRIEVAL_TOP_K);
+              matches = found.filter((m) => known.has(m.chunk.accessionNumber));
             }
           } catch (err) {
             warn(`retrieval failed for "${question}": ${describe(err)}`);
@@ -388,6 +424,12 @@ export function buildGraph(deps: Deps) {
 
     .addNode("persistResearch", async (state: AskStateType) => {
       if (state.cache.filingsReused) return {};
+      // Never advance lastAccession on a run whose filing fetch failed. Doing
+      // so records the new filing as researched when nothing from it was ever
+      // read, and every later request then matches that accession and reuses
+      // forever - a transient EDGAR blip would become permanent. Skipping the
+      // write leaves the previous record intact, so the next request retries.
+      if (!state.filingsFetched) return {};
       // Do not cache a failed research run: without a known head accession or
       // any sub-answers there is nothing worth reusing.
       if (state.latestAccession === null || state.subAnswers.length === 0) return {};
@@ -414,8 +456,18 @@ export function buildGraph(deps: Deps) {
       (state: AskStateType) => (state.hasNewFilings ? "fetchFilings" : "loadCachedResearch"),
       { fetchFilings: "fetchFilings", loadCachedResearch: "loadCachedResearch" },
     )
-    .addEdge("fetchFilings", "chunkAndEmbed")
-    .addEdge("fetchFilings", "generateResearchQuestions")
+    .addConditionalEdges(
+      "fetchFilings",
+      (state: AskStateType) =>
+        state.filingsFetched
+          ? ["chunkAndEmbed", "generateResearchQuestions"]
+          : ["loadCachedResearch"],
+      {
+        chunkAndEmbed: "chunkAndEmbed",
+        generateResearchQuestions: "generateResearchQuestions",
+        loadCachedResearch: "loadCachedResearch",
+      },
+    )
     .addEdge(["chunkAndEmbed", "generateResearchQuestions"], "runSubAgents")
     .addEdge("runSubAgents", "joinResearch")
     .addEdge("loadCachedResearch", "joinResearch")
