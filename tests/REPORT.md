@@ -343,14 +343,27 @@ The test now asserts the full range, plus a companion test pinning that the
 fixture actually drives all three outcomes — a range assertion that only ever
 sees the unadjusted case passes for the wrong reason.
 
-This is an **upper** bound only, and the assertions are `toBeLessThanOrEqual`
-accordingly. A middle chunk can also come out *shorter* than `size + overlap`:
-the two boundaries move independently, the end boundary lengthening the body
-while the prefix boundary shortens the prefix, so they can cancel. Verified
-deterministically — `chunkText("abc\u{1F4C8}abcdefghijklmnopqrstuvwxyz0123456789",
-{ size: 6, overlap: 2 })` yields a second chunk of length 7 where
-`size + overlap` is 8. Do not add a lower-bound assertion here: it would pass on
-a given fixture and fail on other text.
+Both bounds are **derived, not read off a distribution**: `safeBoundary` moves
+by at most +1 and never decreases, so the body is `size` or `size + 1` and can
+never come in short, and the prefix is `overlap` or `overlap - 1` and can never
+lose two. The backend then confirmed adversarially — 4647 cases of at least
+three chunks across four generators including all-astral and wide-plane text,
+sizes 2..122 with randomized overlap — that both bounds hold *and are reached*:
+`min(first - size) = 0` and `min(middle - size - overlap) = -1`. So they are
+tight rather than merely safe, which is worth knowing before anyone loosens
+them.
+
+The two claims are deliberately split across two tests because they have
+different lifetimes: the bound survives a fixture change, while "the fixture
+reaches the bound" is exactly what *should* break when someone edits the
+fixture.
+
+Concretely, a middle chunk *does* come in at `size + overlap - 1`:
+`chunkText("abc\u{1F4C8}abcdefghijklmnopqrstuvwxyz0123456789", { size: 6, overlap: 2 })`
+yields a second chunk of length 7 where `size + overlap` is 8 — the end boundary
+lengthened the body while the prefix boundary shortened the prefix, and the two
+cancelled. Kept as a deterministic witness for the `-1` case, so the bound has a
+worked example next to it and not only a distribution.
 
 **Migration consequence, flagged and actioned:** lone surrogates had already
 reached the embedded text and the on-disk cache, so a cache written before the
