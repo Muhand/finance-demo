@@ -216,13 +216,15 @@ export function buildGraph(deps: Deps) {
      *
      * Reached two ways:
      *   1. the freshness gate found no new filings (state.hasNewFilings false);
-     *   2. new filings WERE detected but the fetch then failed, and prior
-     *      research exists. Serving that research is strictly better than
-     *      answering from a stale vector namespace, but the response must not
-     *      claim the reuse was because nothing changed.
+     *   2. new filings WERE detected but the fetch for their bodies then
+     *      failed, and prior research exists. Serving that research beats
+     *      answering out of a stale vector namespace, and it is the same
+     *      degradation the freshness-check failure already performs.
      */
     .addNode("loadCachedResearch", async (state: AskStateType) => {
       const cached = await deps.cache.get(state.ticker);
+      // state.hasNewFilings is only still true here if we arrived from a
+      // failed fetchFilings rather than from the freshness gate.
       const degraded = state.hasNewFilings;
       return {
         filings: cached?.filings ?? [],
@@ -230,13 +232,21 @@ export function buildGraph(deps: Deps) {
         questions: (cached?.subAnswers ?? []).map((s) => s.question),
         subAnswers: cached?.subAnswers ?? [],
         chunkCount: 0,
-        // filingsReused=true together with reason="new-filings-detected" is
-        // otherwise impossible, so it is an unambiguous signal that new
-        // filings exist but could not be retrieved on this request.
+        // Prior research served without EDGAR confirming anything about the
+        // new filing: that is exactly "upstream-unavailable-stale".
         cache: degraded
-          ? { ...state.cache, filingsReused: true, researchedAt: cached?.researchedAt ?? null }
+          ? {
+              ...state.cache,
+              filingsReused: true,
+              reason: "upstream-unavailable-stale" as const,
+              researchedAt: cached?.researchedAt ?? null,
+            }
           : state.cache,
-        timings: { filingsMs: 0, embedMs: 0, questionGenMs: 0, subAgentsMs: 0 },
+        // On the degraded route fetchFilings already recorded the time it
+        // spent failing; don't overwrite that with a 0 it didn't earn.
+        timings: degraded
+          ? { embedMs: 0, questionGenMs: 0, subAgentsMs: 0 }
+          : { filingsMs: 0, embedMs: 0, questionGenMs: 0, subAgentsMs: 0 },
       };
     })
 
