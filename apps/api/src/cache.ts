@@ -25,9 +25,20 @@ const ResearchRecordSchema = z.object({
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+/**
+ * Bumped whenever previously-cached research becomes untrustworthy. Versioning
+ * the directory (rather than a field in the record) retires stale runs without
+ * changing the on-disk record shape.
+ *
+ * v2: chunk boundaries became surrogate-safe. Research cached under v1 was
+ * embedded and cited from text that could contain U+FFFD where an astral
+ * character was split, and no re-read can repair it.
+ */
+const CACHE_SCHEMA_VERSION = "v2";
+
 export function defaultCacheDir(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.RESEARCH_CACHE_DIR?.trim();
-  return override ? path.resolve(override) : path.join(APP_ROOT, ".data", "research");
+  return override ? path.resolve(override) : path.join(APP_ROOT, ".data", "research", CACHE_SCHEMA_VERSION);
 }
 
 function safeFileName(ticker: string): string {

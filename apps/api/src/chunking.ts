@@ -15,7 +15,30 @@ export interface ChunkOptions {
  * Consequences relied on downstream (and by QA):
  *   - `chunks[i].startsWith(chunks[i - 1].slice(-overlap))`
  *   - `chunks[0] + chunks.slice(1).map(c => c.slice(overlap)).join("")` === text
+ *   - no chunk boundary ever splits a surrogate pair (see `safeBoundary`)
  */
+const isHighSurrogate = (c: number) => c >= 0xd800 && c <= 0xdbff;
+const isLowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff;
+
+/**
+ * Nudge a cut index forward off the seam between a surrogate pair.
+ *
+ * `CHUNKING` counts UTF-16 code units, but an astral character (an emoji, and
+ * plenty of symbols that appear in filings) occupies two of them. A cut landing
+ * between the two halves leaves a lone surrogate, which silently becomes U+FFFD
+ * the moment the chunk is UTF-8 encoded for an HTTP body, an embedding request
+ * or the on-disk cache — so the text we embed, and the snippet we cite back to
+ * the user, would not be what the company actually filed.
+ *
+ * For BMP text this is the identity function, so every other chunking invariant
+ * (exact slice construction, overlap continuity, lossless reconstruction) is
+ * bit-for-bit unchanged.
+ */
+function safeBoundary(text: string, i: number): number {
+  if (i <= 0 || i >= text.length) return i;
+  return isHighSurrogate(text.charCodeAt(i - 1)) && isLowSurrogate(text.charCodeAt(i)) ? i + 1 : i;
+}
+
 export function chunkText(text: string, opts: ChunkOptions = {}): string[] {
   const size = opts.size ?? CHUNKING.size;
   const overlap = opts.overlap ?? CHUNKING.overlap;
@@ -33,9 +56,14 @@ export function chunkText(text: string, opts: ChunkOptions = {}): string[] {
   if (typeof text !== "string" || text.trim().length === 0) return [];
 
   const chunks: string[] = [];
-  for (let start = 0; start < text.length; start += size) {
-    const slice = text.slice(start, start + size);
-    chunks.push(start === 0 ? slice : text.slice(start - overlap, start) + slice);
+  let start = 0;
+  while (start < text.length) {
+    const end = safeBoundary(text, Math.min(start + size, text.length));
+    const body = text.slice(start, end);
+    // Absolute indices rather than a negative slice, so overlap === 0 yields ""
+    // instead of tripping the `String.prototype.slice(-0)` trap.
+    chunks.push(start === 0 ? body : text.slice(safeBoundary(text, start - overlap), start) + body);
+    start = end;
   }
   return chunks;
 }

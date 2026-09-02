@@ -2,3 +2,17 @@ packages:
   - 'apps/*'
   - 'packages/*'
   - 'tests'
+
+# pnpm 10+ blocks dependency postinstall scripts by default, which makes a
+# repo-wide `pnpm install` exit 1 (ERR_PNPM_IGNORED_BUILDS). Each entry below is
+# a package that genuinely needs its build step:
+#   esbuild          - fetches its native binary (pulled in by vitest)
+#   onnxruntime-node - native runtime for the local 384d embedder
+#   protobufjs, sharp - transitive deps of @huggingface/transformers
+# NOTE: pnpm appends placeholder entries here on a blocked install; if this file
+# grows duplicate keys with "set this to true or false", delete those lines.
+allowBuilds:
+  esbuild: true
+  onnxruntime-node: true
+  protobufjs: true
+  sharp: true
