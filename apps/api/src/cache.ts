@@ -38,7 +38,14 @@ const CACHE_SCHEMA_VERSION = "v2";
 
 export function defaultCacheDir(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.RESEARCH_CACHE_DIR?.trim();
-  return override ? path.resolve(override) : path.join(APP_ROOT, ".data", "research", CACHE_SCHEMA_VERSION);
+  if (override) return path.resolve(override);
+  // Serverless filesystems are read-only outside /tmp. Without this the cache
+  // silently fails to persist and the whole "no new filings -> reuse prior
+  // research" path stops working, with no error and a re-billed pipeline on
+  // every request.
+  const serverless = env.VERCEL ?? env.AWS_LAMBDA_FUNCTION_NAME;
+  const root = serverless ? "/tmp" : APP_ROOT;
+  return path.join(root, ".data", "research", CACHE_SCHEMA_VERSION);
 }
 
 function safeFileName(ticker: string): string {
