@@ -1,0 +1,9 @@
+.next/
+next-env.d.ts
+tsconfig.tsbuildinfo
+
+# Auto-generated and re-written by `next dev` on every start. Left untracked
+# deliberately: it injects agent instructions into this workspace, and adopting
+# it is the integrator's call, not the frontend's. See apps/web/README.md.
+AGENTS.md
+CLAUDE.md
