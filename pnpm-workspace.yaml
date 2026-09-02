@@ -2,3 +2,11 @@ packages:
   - 'apps/*'
   - 'packages/*'
   - 'tests'
+
+# esbuild ships a postinstall that fetches its native binary. pnpm 10+ blocks
+# dependency build scripts by default (ERR_PNPM_IGNORED_BUILDS), which makes a
+# repo-wide `pnpm install` exit 1 as soon as anything pulls esbuild (vitest does).
+# Verified against pnpm 11.22.0: this key runs the postinstall and yields a
+# working binary.
+allowBuilds:
+  esbuild: true
