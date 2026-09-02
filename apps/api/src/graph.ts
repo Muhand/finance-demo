@@ -240,6 +240,21 @@ export function buildGraph(deps: Deps) {
           }
         });
       } catch (err) {
+        // A total EDGAR failure. Falling through with zero filings would
+        // produce a 200 that is byte-identical to a company that has
+        // legitimately never filed, so the client could never tell an outage
+        // from an empty state or offer a retry - and we would still burn a
+        // question-gen call plus one sub-agent per question to produce an
+        // answer we simultaneously label ungrounded. Surface the outage
+        // instead, unless there is prior research worth degrading to.
+        const cached = await deps.cache.get(state.ticker);
+        if (!cached || cached.subAnswers.length === 0) {
+          throw new AskError(
+            "UPSTREAM_SEC_ERROR",
+            `SEC EDGAR is unavailable and no prior research is cached for ${state.ticker}`,
+            describe(err),
+          );
+        }
         warnings.push(`EDGAR filing fetch failed: ${describe(err)}`);
         filings = [];
         sections = [];
