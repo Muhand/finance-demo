@@ -10,5 +10,9 @@
     "test": "pnpm --filter @finance-demo/tests test",
     "lint": "pnpm -r --if-present lint"
   },
-  "devDependencies": { "typescript": "^5.9.0", "@types/node": "^24.0.0" }
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "@types/node": "^24.0.0",
+    "next": "16.3.4"
+  }
 }
