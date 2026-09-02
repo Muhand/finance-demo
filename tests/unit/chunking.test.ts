@@ -145,6 +145,18 @@ describe("chunkText — unicode safety", () => {
   const bmpText = ("研究開発費は前年同期比で増加した。café naïve — Ünternehmen ").repeat(30);
   // Astral-plane characters occupy TWO UTF-16 code units each.
   const astralText = ("📈📉💹🧾🏦 quarterly results 🚀").repeat(40);
+  // Same, but non-repetitive, so every chunk has exactly one position in the
+  // source and a shared-window measurement is unambiguous.
+  const uniqueAstral = Array.from(
+    { length: 300 },
+    (_, i) => `📈${i} 研究開発費 🚀${i} café`,
+  ).join(" ");
+
+  /** Longest k <= max where `next` starts with the last k chars of `prev`. */
+  const sharedWindow = (prev: string, next: string, max: number): number => {
+    for (let k = max; k >= 0; k--) if (prev.endsWith(next.slice(0, k))) return k;
+    return -1;
+  };
 
   it("never loses or corrupts content on multi-byte (BMP) text", () => {
     const chunks = chunkText(bmpText, opts);
@@ -153,22 +165,13 @@ describe("chunkText — unicode safety", () => {
   });
 
   it("drops nothing on astral text, whatever the adjusted boundaries are", () => {
-    // Non-repetitive so each chunk has exactly one position in the source.
-    const text = Array.from(
-      { length: 300 },
-      (_, i) => `📈${i} 研究開発費 🚀${i} café`,
-    ).join(" ");
-    const chunks = chunkText(text, opts);
+    const chunks = chunkText(uniqueAstral, opts);
     expect(chunks.length).toBeGreaterThan(10);
-    expectCoversLosslessly(chunks, text);
+    expectCoversLosslessly(chunks, uniqueAstral);
   });
 
   it("consecutive chunks still share an overlap window on astral text", () => {
-    const text = Array.from(
-      { length: 300 },
-      (_, i) => `📈${i} 研究開発費 🚀${i} café`,
-    ).join(" ");
-    const chunks = chunkText(text, opts);
+    const chunks = chunkText(uniqueAstral, opts);
     for (let i = 1; i < chunks.length; i++) {
       // The window is `overlap` chars, or `overlap - 1` where the boundary was
       // nudged off a surrogate pair. It must be one of the two, and it must
@@ -178,6 +181,45 @@ describe("chunkText — unicode safety", () => {
       );
       expect(shared, `chunk ${i} does not overlap chunk ${i - 1}`).toBe(true);
     }
+  });
+
+  it("the overlap shortfall is at most one character, across several size/overlap pairs", () => {
+    // Retrieval quality depends on chunks genuinely sharing context. A boundary
+    // nudge costs at most one character; anything larger would silently thin
+    // the overlap without losing content, so `expectCoversLosslessly` would not
+    // catch it. Measured rather than assumed.
+    const shortfalls: number[] = [];
+    for (const [size, overlap] of [
+      [100, 20],
+      [64, 8],
+      [37, 5],
+    ] as const) {
+      const chunks = chunkText(uniqueAstral, { size, overlap });
+      for (let i = 1; i < chunks.length; i++) {
+        const k = sharedWindow(chunks[i - 1]!, chunks[i]!, overlap);
+        expect(k, `chunk ${i} shares no window at size=${size}`).toBeGreaterThanOrEqual(0);
+        shortfalls.push(overlap - k);
+      }
+    }
+    expect(Math.max(...shortfalls)).toBeLessThanOrEqual(1);
+    // Non-vacuity: boundaries really are being nudged in this fixture, so the
+    // assertion above is exercising the adjusted path, not just the clean one.
+    expect(shortfalls).toContain(1);
+  });
+
+  it("stays lossless at overlap === 1, where the shared window can bottom out at zero", () => {
+    // `safeBoundary` only ever nudges FORWARD, so at overlap 1 a prefix start
+    // that lands inside a pair moves to the chunk start and the window becomes
+    // empty. That is overlap-1 bottoming out at 0, not a separate behaviour,
+    // and it is unreachable at the contract's 1800/200. Pinned so nobody
+    // "fixes" it by nudging backward, which would take the whole pair and make
+    // the window 2 — larger than the caller asked for.
+    const chunks = chunkText(uniqueAstral, { size: 40, overlap: 1 });
+    const windows = chunks
+      .slice(1)
+      .map((c, i) => sharedWindow(chunks[i]!, c, 1));
+    expect(windows.every((w) => w === 0 || w === 1)).toBe(true);
+    expectCoversLosslessly(chunks, uniqueAstral);
   });
 
   it("every chunk survives a UTF-8 round-trip — no chunk boundary corrupts a character", () => {

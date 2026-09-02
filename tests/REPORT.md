@@ -11,7 +11,7 @@ Everything that would is injected (`Deps`) or stubbed in `tests/helpers/harness.
 ```
 pnpm --filter @finance-demo/tests test
   Test Files   12 passed (12)
-       Tests   127 passed (127)
+       Tests   129 passed (129)
 
 pnpm --filter @finance-demo/tests typecheck   ->  clean, 0 errors
 ```
@@ -26,7 +26,7 @@ value. Details in the defect log below.
 | contract | `contract/ask-request.test.ts` | 9 |
 | contract | `contract/ticker-directory.test.ts` | 6 |
 | contract | `contract/transport.test.ts` | 5 |
-| unit | `unit/chunking.test.ts` | 22 |
+| unit | `unit/chunking.test.ts` | 24 |
 | unit | `unit/tickers.test.ts` | 15 |
 | unit | `unit/embeddings.test.ts` | 9 |
 | unit | `unit/vectorstore.test.ts` | 8 |
@@ -278,6 +278,27 @@ duplicated characters. Two boundary-agnostic tests were added to close that:
   `overlap - 1` characters, taken from the end of the previous chunk.
 
 Both pass. The fix is lossless.
+
+Two further tests were added after the backend ran an independent randomized
+property check over 2000 trials and reported the shared-window shortfall
+distribution. Their measurement is now a permanent guard rather than a one-off:
+
+- **the shortfall is at most one character**, measured across three
+  `size`/`overlap` pairs. A larger nudge would thin the retrieval overlap
+  *without* losing content, so the losslessness test above would not catch it.
+  The test also asserts the shortfall-1 case actually occurs in the fixture, so
+  it cannot pass vacuously by only exercising clean boundaries.
+- **`overlap === 1` stays lossless**, where the shared window can bottom out at
+  zero. `safeBoundary` only nudges forward, so a prefix start landing inside a
+  pair moves to the chunk start and yields an empty prefix. That is `overlap - 1`
+  bottoming out, not separate behaviour, and it is unreachable at the contract's
+  1800/200 — but it is reachable through the public `chunkText` API. Pinned so
+  nobody "fixes" it by nudging backward, which would take the whole pair and
+  produce a 2-character window, larger than the caller asked for.
+
+QA measured a shortfall-1 rate of ~5% across its fixtures versus the backend's
+~30%; the difference is fixture astral-density, not a disagreement. Both agree
+the shortfall never reaches 2.
 
 **Migration consequence, flagged and actioned:** lone surrogates had already
 reached the embedded text and the on-disk cache, so a cache written before the
