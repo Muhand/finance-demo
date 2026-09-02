@@ -1,0 +1,35 @@
+{
+  "name": "@finance-demo/api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "scripts": {
+    "dev": "node --watch src/index.ts",
+    "start": "node src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@finance-demo/contracts": "workspace:*",
+    "@hono/node-server": "^2.1.1",
+    "@langchain/anthropic": "^1.5.9",
+    "@langchain/core": "^1.2.9",
+    "@langchain/langgraph": "^1.4.13",
+    "@pinecone-database/pinecone": "^8.2.0",
+    "hono": "^4.13.5",
+    "sec-edgar-toolkit": "^0.2.0",
+    "yahoo-finance2": "^3.15.4",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}
