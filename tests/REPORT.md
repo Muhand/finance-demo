@@ -329,6 +329,15 @@ move forward by one, so the ASCII invariant relaxes to `size + overlap + 1`
 (first chunk `size + 1`). Measured, not assumed — the observed maximum is
 exactly `size + overlap + 1`.
 
+This is an **upper** bound only, and the assertions are `toBeLessThanOrEqual`
+accordingly. A middle chunk can also come out *shorter* than `size + overlap`:
+the two boundaries move independently, the end boundary lengthening the body
+while the prefix boundary shortens the prefix, so they can cancel. Verified
+deterministically — `chunkText("abc\u{1F4C8}abcdefghijklmnopqrstuvwxyz0123456789",
+{ size: 6, overlap: 2 })` yields a second chunk of length 7 where
+`size + overlap` is 8. Do not add a lower-bound assertion here: it would pass on
+a given fixture and fail on other text.
+
 **Migration consequence, flagged and actioned:** lone surrogates had already
 reached the embedded text and the on-disk cache, so a cache written before the
 fix stays corrupt after it. The integrator versioned the cache directory to
