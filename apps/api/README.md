@@ -50,7 +50,7 @@ Copy the repo-root `.env.example` to `.env`, or export these directly.
 | `PINECONE_INDEX` | no | `finance-demo` | Pinecone index name. |
 | `EMBEDDER` | no | `hash` | `local` selects `LocalEmbedder` (MiniLM). Anything else selects `HashEmbedder`. |
 | `EMBEDDING_MODEL` | no | `Xenova/all-MiniLM-L6-v2` | Only used when `EMBEDDER=local`. |
-| `RESEARCH_CACHE_DIR` | no | `apps/api/.data/research` | Where completed research runs are persisted. |
+| `RESEARCH_CACHE_DIR` | no | `apps/api/.data/research/v2` | Where completed research runs are persisted. |
 | `TICKERS_PATH` | no | resolved from `@finance-demo/contracts/tickers.json` | Override the ticker directory. |
 
 ## Pinecone index requirement
@@ -111,10 +111,11 @@ resolveTicker
   |- BRANCH A  fetchQuote ------------------------------------+
   +- BRANCH B  checkFilingFreshness                           |
         |- new filings -> fetchFilings (<=5 in flight)        |
-        |     |- chunkAndEmbed            (parallel)          |
-        |     +- generateResearchQuestions (parallel)         |
-        |            -> runSubAgents -> joinResearch ---------+
-        +- no new filings -> loadCachedResearch --------------+
+        |     |- ok -> chunkAndEmbed            (parallel)    |
+        |     |        generateResearchQuestions (parallel)   |
+        |     |            -> runSubAgents -> joinResearch ---+
+        |     +- fetch failed -> loadCachedResearch ----------+
+        +- no new filings ----> loadCachedResearch -----------+
                                                               v
                                                       synthesize -> persistResearch
 ```
@@ -129,11 +130,31 @@ resolveTicker
 | No cached record | `cold-start` | `false` |
 | Cached record has no sub-answers | `cache-miss-rebuilt` | `false` |
 | Cached accession differs from EDGAR's newest | `new-filings-detected` | `false` |
-| Cached accession matches, or EDGAR is unreachable | `no-new-filings-reused` | `true` |
+| Cached accession matches EDGAR's newest | `no-new-filings-reused` | `true` |
+| EDGAR unreachable, prior research exists | `upstream-unavailable-stale` | `true` |
+| EDGAR unreachable, no usable prior research | *(none)* - `502 UPSTREAM_SEC_ERROR` | - |
 
 On reuse, fetch/chunk/embed/sub-agents are **skipped entirely** (their `timings`
 come back as `0`) and the saved `subAnswers` + `filings` are reloaded. Synthesis
 always re-runs, because the quote is always fresh.
+
+`upstream-unavailable-stale` covers both EDGAR failure points: the freshness
+check itself, and a fetch that fails after a new accession was already
+detected. It never asserts that nothing changed - only that nothing could be
+checked. In that second case `persistResearch` deliberately does **not** advance
+`lastAccession`, so the un-ingested filing is retried on the next request rather
+than being recorded as researched.
+
+An EDGAR outage is only fatal when there is nothing to degrade to. A company
+that has genuinely never filed is not an outage: `getFilingRefs` resolves `[]`
+and the request returns `200` with `filings: []`.
+
+### Citation invariant
+
+Every `Citation.accessionNumber` is guaranteed to appear in `AskResponse.filings`.
+A ticker's vector namespace can outlive the run that populated it, so
+`runSubAgents` filters retrieval matches against the current request's filings
+rather than trusting the store. Clients may link citations to filings directly.
 
 ### The metadata-only constraint
 
