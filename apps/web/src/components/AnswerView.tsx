@@ -35,7 +35,10 @@ export function AnswerView({ response }: { response: AskResponse }) {
 
 function CacheNote({ response }: { response: AskResponse }) {
   const { cache } = response;
-  if (!cache.filingsReused) {
+  // Checked first, and independently of `filingsReused`: this is the one cache
+  // state the user must not miss, so it is never gated behind another flag.
+  const stale = cache.reason === "upstream-unavailable-stale";
+  if (!stale && !cache.filingsReused) {
     if (cache.reason === "cold-start" || cache.reason === "new-filings-detected") {
       return (
         <p className={s.quoteFoot}>
@@ -52,18 +55,25 @@ function CacheNote({ response }: { response: AskResponse }) {
     }
     return null;
   }
-  const stale = cache.reason === "upstream-unavailable-stale";
   return (
     <p className={s.quoteFoot}>
       <span className={`${s.badge} ${stale ? s.badgeWarn : s.badgeAccent}`}>
         <CacheIcon size={11} /> {stale ? "SEC EDGAR unreachable" : "Filings unchanged"}
       </span>
       <span>
-        {stale
-          ? "Showing the last research we completed — we could not reach EDGAR to check for new filings."
-          : "Reusing prior research"}
-        {cache.researchedAt ? ` from ${fmtTimestamp(cache.researchedAt)}` : ""} — the quote
-        above is live.
+        {stale ? (
+          <>
+            Showing the last research we completed
+            {cache.researchedAt ? `, from ${fmtTimestamp(cache.researchedAt)}` : ""} — we
+            could not reach EDGAR to check for new filings. The quote above is live.
+          </>
+        ) : (
+          <>
+            Reusing prior research
+            {cache.researchedAt ? ` from ${fmtTimestamp(cache.researchedAt)}` : ""} — the
+            quote above is live.
+          </>
+        )}
       </span>
       {cache.lastAccession ? (
         <span className="num">latest {cache.lastAccession}</span>
