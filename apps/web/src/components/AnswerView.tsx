@@ -52,13 +52,16 @@ function CacheNote({ response }: { response: AskResponse }) {
     }
     return null;
   }
+  const stale = cache.reason === "upstream-unavailable-stale";
   return (
     <p className={s.quoteFoot}>
-      <span className={`${s.badge} ${s.badgeAccent}`}>
-        <CacheIcon size={11} /> Filings unchanged
+      <span className={`${s.badge} ${stale ? s.badgeWarn : s.badgeAccent}`}>
+        <CacheIcon size={11} /> {stale ? "SEC EDGAR unreachable" : "Filings unchanged"}
       </span>
       <span>
-        Reusing prior research
+        {stale
+          ? "Showing the last research we completed — we could not reach EDGAR to check for new filings."
+          : "Reusing prior research"}
         {cache.researchedAt ? ` from ${fmtTimestamp(cache.researchedAt)}` : ""} — the quote
         above is live.
       </span>

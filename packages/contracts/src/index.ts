@@ -131,6 +131,12 @@ export const CacheInfoSchema = z.object({
     "new-filings-detected",
     "no-new-filings-reused",
     "cache-miss-rebuilt",
+    /**
+     * EDGAR was unreachable, so prior research was served without ever
+     * confirming whether new filings exist. Distinct from
+     * "no-new-filings-reused", which asserts a check actually happened.
+     */
+    "upstream-unavailable-stale",
   ]),
   /** Accession number of the newest filing known for this ticker. */
   lastAccession: z.string().nullable(),

@@ -182,8 +182,10 @@ export function buildGraph(deps: Deps) {
         reason = "cold-start";
       } else if (secFailed) {
         // EDGAR is unreachable; prefer serving prior research over failing.
+        // Report it as stale rather than "no-new-filings-reused" — nothing
+        // confirmed there are no new filings, because nothing could be reached.
         hasNewFilings = false;
-        reason = "no-new-filings-reused";
+        reason = "upstream-unavailable-stale";
         latestAccession = cached.lastAccession;
       } else if (cached.subAnswers.length === 0) {
         hasNewFilings = true;
