@@ -304,15 +304,54 @@ function extractText(content: unknown): string {
   return "";
 }
 
+/**
+ * Every balanced `{...}` / `[...]` span in `text`, outermost first.
+ *
+ * The naive "first bracket to last bracket" slice breaks on real model output:
+ * a bracket inside prose before the JSON shifts the start, and a bracket in
+ * trailing prose extends the end past the value. This scans with a depth
+ * counter that respects strings and escapes, so a brace inside a narrative
+ * string cannot close the object early.
+ */
+function extractJsonCandidates(text: string, max = 5): string[] {
+  const found: string[] = [];
+  for (let i = 0; i < text.length && found.length < max; i += 1) {
+    const open = text[i];
+    if (open !== "{" && open !== "[") continue;
+    const close = open === "{" ? "}" : "]";
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let j = i; j < text.length; j += 1) {
+      const c = text[j];
+      if (escaped) { escaped = false; continue; }
+      if (c === "\\") { if (inString) escaped = true; continue; }
+      if (c === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (c === open) depth += 1;
+      else if (c === close) {
+        depth -= 1;
+        if (depth === 0) { found.push(text.slice(i, j + 1)); i = j; break; }
+      }
+    }
+  }
+  return found;
+}
+
 function parseJsonBlock<T>(raw: string, schema: z.ZodType<T>): T {
   const text = raw.replace(/```(?:json)?/gi, "").trim();
-  const start = text.search(/[[{]/);
-  if (start < 0) throw new Error("model response contained no JSON");
-  const opener = text[start];
-  const closer = opener === "[" ? "]" : "}";
-  const end = text.lastIndexOf(closer);
-  if (end <= start) throw new Error("model response contained no complete JSON value");
-  return schema.parse(JSON.parse(text.slice(start, end + 1)));
+  const candidates = extractJsonCandidates(text);
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    try {
+      return schema.parse(JSON.parse(candidate));
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  // No balanced span at all usually means the response was truncated.
+  const reason = candidates.length === 0 ? "no balanced JSON value (truncated?)" : describe(lastError);
+  throw new Error(`could not parse model JSON: ${reason}; response began: ${text.slice(0, 200)}`);
 }
 
 export class AnthropicLlm implements Llm {
@@ -475,7 +514,7 @@ export class AnthropicLlm implements Llm {
     );
 
     try {
-      const raw = await this.#ask(this.synthesisModel, 4096, system, user);
+      const raw = await this.#ask(this.synthesisModel, 8192, system, user);
       const parsed = parseJsonBlock(raw, LlmSummarySchema);
       return SummarySchema.parse(parsed);
     } catch (err) {

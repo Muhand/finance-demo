@@ -4,7 +4,7 @@ import { TickerListSchema, type TickerEntry } from "@finance-demo/contracts";
 // Statically imported so bundlers can resolve the directory at build time.
 // A dynamic readFileSync here makes Turbopack trace the entire project into the
 // serverless function, which fails the Next build.
-import bundledTickers from "@finance-demo/contracts/tickers.json";
+import bundledTickers from "@finance-demo/contracts/tickers.json" with { type: "json" };
 
 let directory: TickerEntry[] | null = null;
 let bySymbol: Map<string, TickerEntry> | null = null;
