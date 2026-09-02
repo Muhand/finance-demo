@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@finance-demo/api": "workspace:*",
     "@finance-demo/contracts": "workspace:*"
   },
   "devDependencies": {

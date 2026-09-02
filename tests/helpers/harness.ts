@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vitest";
+import type { Mock, MockInstance } from "vitest";
 import type { FilingRef, Quote } from "@finance-demo/contracts";
 import { ResearchCache } from "@api/cache";
 import { HashEmbedder } from "@api/embeddings";
@@ -9,10 +10,11 @@ import { StubLlm } from "@api/llm";
 import { MemoryVectorStore } from "@api/vectorstore";
 import type { Deps } from "@api/graph";
 import {
-  AAPL_10K_SECTIONS,
   AAPL_FILINGS,
+  AAPL_QUOTE,
   NEWEST_ACCESSION,
   makeQuote,
+  sectionsForForm,
 } from "../fixtures/index.js";
 
 /**
@@ -29,23 +31,31 @@ export interface Harness {
   cache: ResearchCache;
   cacheDir: string;
   spies: {
-    embed: ReturnType<typeof vi.spyOn>;
-    upsert: ReturnType<typeof vi.spyOn>;
-    storeQuery: ReturnType<typeof vi.spyOn>;
-    generateResearchQuestions: ReturnType<typeof vi.spyOn>;
-    answerFromContext: ReturnType<typeof vi.spyOn>;
-    synthesize: ReturnType<typeof vi.spyOn>;
-    getLatestAccession: ReturnType<typeof vi.fn>;
-    getFilingRefs: ReturnType<typeof vi.fn>;
-    loadFilingSections: ReturnType<typeof vi.fn>;
-    quote: ReturnType<typeof vi.fn>;
+    embed: MockInstance;
+    upsert: MockInstance;
+    storeQuery: MockInstance;
+    generateResearchQuestions: MockInstance;
+    answerFromContext: MockInstance;
+    synthesize: MockInstance;
+    getLatestAccession: Mock;
+    getFilingRefs: Mock;
+    loadFilingSections: Mock;
+    quote: Mock;
   };
   /** Change what EDGAR reports as the newest accession. */
   setLatestAccession(accession: string | null): void;
   /** Change the filing list EDGAR returns. */
   setFilings(filings: FilingRef[]): void;
+  /** Make EDGAR unreachable, to test upstream failure handling. */
+  failSec(message?: string): void;
   /** Make the quote provider reject, to test graceful degradation. */
   failQuote(message?: string): void;
+  /**
+   * Stop varying the quote between calls. The default is to return a NEW quote
+   * every call so "was the quote refetched?" is observable; freeze it when a
+   * test needs the rest of the pipeline to be byte-for-byte reproducible.
+   */
+  freezeQuote(): void;
   cleanup(): Promise<void>;
 }
 
@@ -62,11 +72,22 @@ export async function createHarness(): Promise<Harness> {
   let quoteSeq = 0;
   let quoteError: Error | null = null;
 
-  const getLatestAccession = vi.fn(async (_cik: string) => latestAccession);
-  const getFilingRefs = vi.fn(async (_cik: string, _opts?: unknown) => filings);
-  const loadFilingSections = vi.fn(async (_ref: FilingRef) => AAPL_10K_SECTIONS);
+  let secError: Error | null = null;
+  const getLatestAccession = vi.fn(async (_cik: string) => {
+    if (secError) throw secError;
+    return latestAccession;
+  });
+  const getFilingRefs = vi.fn(async (_cik: string, _opts?: unknown) => {
+    if (secError) throw secError;
+    return filings;
+  });
+  const loadFilingSections = vi.fn(async (ref: FilingRef) =>
+    sectionsForForm(ref.formType, ref.accessionNumber),
+  );
+  let quoteFrozen = false;
   const quote = vi.fn(async (_ticker: string): Promise<Quote | null> => {
     if (quoteError) throw quoteError;
+    if (quoteFrozen) return AAPL_QUOTE;
     return makeQuote(++quoteSeq);
   });
 
@@ -106,8 +127,14 @@ export async function createHarness(): Promise<Harness> {
     setFilings(f) {
       filings = f;
     },
+    failSec(message = "EDGAR upstream 503") {
+      secError = new Error(message);
+    },
     failQuote(message = "yahoo-finance2 upstream 503") {
       quoteError = new Error(message);
+    },
+    freezeQuote() {
+      quoteFrozen = true;
     },
     async cleanup() {
       vi.restoreAllMocks();

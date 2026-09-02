@@ -51,10 +51,12 @@ describe("runAsk — full offline pipeline", () => {
     for (const call of h.spies.upsert.mock.calls) expect(call[0]).toBe("AAPL");
   });
 
-  it("is deterministic — the same request twice produces the same summary", async () => {
+  it("is deterministic — with a frozen quote, the same request twice gives the same summary", async () => {
+    h.freezeQuote();
     const a = await runAsk(ask(), h.deps);
     const b = await runAsk(ask(), h.deps);
     expect(b.summary).toEqual(a.summary);
+    expect(b.subAnswers).toEqual(a.subAnswers);
   });
 });
 

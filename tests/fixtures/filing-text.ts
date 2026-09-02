@@ -76,3 +76,26 @@ export const SECTIONS_WITH_EMPTY: Array<{ section: string | null; text: string }
   { section: "9B", text: "   \n\t  " },
   { section: null, text: MDA_TEXT },
 ];
+
+/**
+ * Section sets keyed by form type, so the SEC stub returns something faithful:
+ * a 10-K carries Risk Factors + MD&A, a 10-Q carries MD&A, an 8-K carries a
+ * single untitled body. Distinct text per filing keeps the vector store from
+ * being filled with identical passages.
+ */
+export function sectionsForForm(
+  formType: string,
+  accessionNumber: string,
+): Array<{ section: string | null; text: string }> {
+  const tag = `\n[accession ${accessionNumber}]`;
+  if (formType === "10-K") {
+    return [
+      { section: "1A", text: RISK_FACTORS_TEXT + tag },
+      { section: "7", text: MDA_TEXT + tag },
+    ];
+  }
+  if (formType === "10-Q") {
+    return [{ section: "7", text: MDA_TEXT + tag }];
+  }
+  return [{ section: null, text: MDA_TEXT.slice(0, 2400) + tag }];
+}
