@@ -239,19 +239,49 @@ describe("chunkText — unicode safety", () => {
     expectCoversLosslessly(chunks, uniqueAstral);
   });
 
-  it("bounds chunk length on astral text, where both boundaries may be nudged", () => {
-    // The end boundary and the prefix start can each move forward by one, so
-    // the ASCII invariant (first chunk exactly `size`, others <= size+overlap)
-    // relaxes by exactly one character here. Measured, not assumed.
+  it("bounds chunk length on astral text, where the two boundaries move independently", () => {
+    // Both boundaries are nudged FORWARD, but they act in opposite directions
+    // on length: the end boundary lengthens the body, the prefix boundary
+    // shortens the prefix.
+    //
+    //   body   = text.slice(start, safeBoundary(start + size))     -> size or size + 1
+    //   prefix = text.slice(safeBoundary(start - overlap), start)  -> overlap or overlap - 1
+    //
+    // So a middle chunk is size + overlap - 1, size + overlap, or
+    // size + overlap + 1 — the two adjustments can also cancel. The first chunk
+    // has no prefix, so it is size or size + 1 and can never come in short.
     for (const [size, overlap] of [
       [100, 20],
       [64, 8],
       [37, 5],
+      [180, 20],
     ] as const) {
       const chunks = chunkText(uniqueAstral, { size, overlap });
+      expect(chunks.length).toBeGreaterThan(3);
+
+      expect(chunks[0]!.length).toBeGreaterThanOrEqual(size);
       expect(chunks[0]!.length).toBeLessThanOrEqual(size + 1);
+
+      // Middle chunks only: the last one has a partial body.
+      for (const [i, c] of chunks.slice(1, -1).entries()) {
+        expect(c.length, `middle chunk ${i + 1} at ${size}/${overlap}`)
+          .toBeGreaterThanOrEqual(size + overlap - 1);
+        expect(c.length, `middle chunk ${i + 1} at ${size}/${overlap}`)
+          .toBeLessThanOrEqual(size + overlap + 1);
+      }
+      // Upper bound holds for every chunk, including the last.
       for (const c of chunks) expect(c.length).toBeLessThanOrEqual(size + overlap + 1);
     }
+  });
+
+  it("exercises all three middle-chunk length adjustments, so the bounds above are not vacuous", () => {
+    // A range assertion that only ever sees the unadjusted case passes for the
+    // wrong reason. This pins that THIS fixture drives all three outcomes; it
+    // is a property of the fixture, not of chunkText, and it exists so that
+    // changing the fixture surfaces the loss of coverage instead of hiding it.
+    const chunks = chunkText(uniqueAstral, { size: 100, overlap: 20 });
+    const deltas = new Set(chunks.slice(1, -1).map((c) => c.length - 120));
+    expect([...deltas].sort((a, b) => a - b)).toEqual([-1, 0, 1]);
   });
 
   it("every chunk survives a UTF-8 round-trip — no chunk boundary corrupts a character", () => {

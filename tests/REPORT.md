@@ -11,7 +11,7 @@ Everything that would is injected (`Deps`) or stubbed in `tests/helpers/harness.
 ```
 pnpm --filter @finance-demo/tests test
   Test Files   12 passed (12)
-       Tests   130 passed (130)
+       Tests   131 passed (131)
 
 pnpm --filter @finance-demo/tests typecheck   ->  clean, 0 errors
 ```
@@ -26,7 +26,7 @@ value. Details in the defect log below.
 | contract | `contract/ask-request.test.ts` | 9 |
 | contract | `contract/ticker-directory.test.ts` | 6 |
 | contract | `contract/transport.test.ts` | 5 |
-| unit | `unit/chunking.test.ts` | 25 |
+| unit | `unit/chunking.test.ts` | 26 |
 | unit | `unit/tickers.test.ts` | 15 |
 | unit | `unit/embeddings.test.ts` | 9 |
 | unit | `unit/vectorstore.test.ts` | 8 |
@@ -324,10 +324,24 @@ uniform rule at both the chunk end and the prefix start; backward would need the
 two call sites to disagree about direction to keep the end boundary from
 stalling.
 
-A chunk-length bound on astral text was added alongside: both boundaries can
-move forward by one, so the ASCII invariant relaxes to `size + overlap + 1`
-(first chunk `size + 1`). Measured, not assumed — the observed maximum is
-exactly `size + overlap + 1`.
+A chunk-length bound on astral text was added alongside. Both boundaries are
+nudged forward, but they act in **opposite directions on length**:
+
+```
+body   = text.slice(start, safeBoundary(start + size))     -> size    or size + 1
+prefix = text.slice(safeBoundary(start - overlap), start)  -> overlap or overlap - 1
+```
+
+So a middle chunk is `size + overlap - 1`, `size + overlap`, or
+`size + overlap + 1`, and the two adjustments can cancel. The first chunk has no
+prefix and so is `size` or `size + 1`, never short. QA initially recorded this
+as "+1, never -1", which is true only of the first chunk; the backend's
+deterministic counter-example (`chunkText("abc📈abcdefghij…", { size: 6, overlap: 2 })`
+-> `chunk[1].length === 7` against `size + overlap === 8`) was reproduced here,
+and QA's own fixture turns out to produce the `-1` case at every size tested.
+The test now asserts the full range, plus a companion test pinning that the
+fixture actually drives all three outcomes — a range assertion that only ever
+sees the unadjusted case passes for the wrong reason.
 
 This is an **upper** bound only, and the assertions are `toBeLessThanOrEqual`
 accordingly. A middle chunk can also come out *shorter* than `size + overlap`:
@@ -420,6 +434,43 @@ QA flagged that serving stale research during an outage was being reported as
 `CacheInfo.reason` had no honest value for it, so no test was written rather
 than invent an enum value outside the frozen contract. The integrator added
 `"upstream-unavailable-stale"` and it is now asserted on the degraded path.
+
+## The recurring failure shape
+
+Four instances of the same mistake surfaced in `unit/chunking.test.ts` alone, in
+both directions between QA and the backend. It is recorded here because it is
+probably the most reusable thing in this report.
+
+**The shape: an assertion that reads as measured, but is only true of the case
+that produced it — and whose failure mode is to keep passing.**
+
+1. **The original surrogate test.** Asserted only that each chunk survives a
+   UTF-8 round-trip. The fix satisfied that trivially while shifting every
+   boundary, so the suite would have gone green whether or not the fix was
+   lossless. Closed by adding boundary-agnostic tiling and coverage checks.
+2. **The shortfall bound.** Asserted the shortfall is at most 1, but nothing
+   guaranteed the fixture ever produced a shortfall — a bound that only ever
+   exercises clean boundaries passes for the wrong reason. Closed by asserting
+   the shortfall-1 case actually occurs.
+3. **The capped window search.** The helper measuring the shared window searched
+   only up to `overlap`, so a window *larger* than requested read back as
+   exactly `overlap`. Both window tests were blind to the precise regression
+   they existed to catch: measured against a backward-nudging implementation,
+   the fixed assertions caught 18 violations and the previous ones caught 0.
+   Closed by always searching with headroom and asserting `window <= overlap`.
+4. **The chunk-length bound.** The backend wrote a loose `size + overlap ± 1`;
+   QA tightened it to "+1, never -1", which was right for the first chunk and
+   wrong for middle chunks. Neither side noticed until the length distribution
+   was measured rather than re-derived. Closed by asserting the true range and
+   pinning that the fixture drives all three outcomes.
+
+The through-line: **derive the bound, then measure whether the fixture reaches
+it.** Every one of these passed while proving less than it claimed, and in three
+of the four cases the data needed to catch it was already available in a fixture
+nobody had measured. Where a test asserts a range or a bound, it is worth a
+companion assertion that the interesting case is actually exercised — and where
+a test measures a value, the measurement must have headroom above the value it
+expects, or it cannot see the regression it was written for.
 
 ## Gaps not covered
 
