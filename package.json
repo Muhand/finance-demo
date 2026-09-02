@@ -1,0 +1,14 @@
+{
+  "name": "finance-demo",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "scripts": {
+    "dev": "pnpm -r --parallel --if-present dev",
+    "build": "pnpm -r --if-present build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm --filter @finance-demo/tests test",
+    "lint": "pnpm -r --if-present lint"
+  },
+  "devDependencies": { "typescript": "^5.9.0", "@types/node": "^24.0.0" }
+}
