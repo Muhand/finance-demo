@@ -11,7 +11,7 @@ Everything that would is injected (`Deps`) or stubbed in `tests/helpers/harness.
 ```
 pnpm --filter @finance-demo/tests test
   Test Files   2 failed | 10 passed (12)
-       Tests   3 failed | 117 passed (120)
+       Tests   4 failed | 119 passed (123)
 
 pnpm --filter @finance-demo/tests typecheck   ->  clean, 0 errors
 ```
@@ -29,10 +29,17 @@ pnpm --filter @finance-demo/tests typecheck   ->  clean, 0 errors
 | unit | `unit/cache.test.ts` | 8 | pass |
 | integration | `integration/graph.test.ts` | 15 | pass |
 | integration | `integration/http.test.ts` | 10 | pass |
-| integration | `integration/resilience.test.ts` | 7 | **5 pass / 2 fail** (DEFECT-2) |
+| integration | `integration/resilience.test.ts` | 10 | **7 pass / 3 fail** (DEFECT-3) |
 
-The 3 failures are two real defects, described below. They are left failing
+The 4 failures are two real defects, described below. They are left failing
 deliberately; no test was weakened to make the suite green.
+
+**DEFECT-2 was fixed by the backend during this run (`feat/backend` 83b1fba) and
+is verified fixed here** — a total EDGAR outage with no cached research now
+throws `UPSTREAM_SEC_ERROR` and returns 502, and I independently confirmed it
+fails *before* spending anything: question-generation, sub-agent, embed and
+upsert counts are all 0 on that path (they were 4 Anthropic calls before). Both
+tests now pass and carry a permanent zero-spend regression guard.
 
 **Verified working** (worth stating, because these were the risky parts):
 
@@ -54,6 +61,9 @@ deliberately; no test was weakened to make the suite green.
 - `chunkText` handles the `String.prototype.slice(-0)` trap correctly
   (`overlap: 0` yields plain slicing, not duplicated chunks).
 - `filterTickers` honours `limit: 0` (i.e. `limit ?? 25`, not `limit || 25`).
+- A total EDGAR outage now fails fast with `UPSTREAM_SEC_ERROR` / 502 and zero
+  LLM spend, while a company that legitimately has no filings still returns 200
+  with `filings: []` — the outage and the empty state are distinguishable.
 
 ### Reproducing these numbers
 
@@ -295,59 +305,89 @@ integrator instead decides code-unit slicing is acceptable, amend `CHUNKING` in
 
 ---
 
-### DEFECT-2 — a total EDGAR outage is reported to the client as HTTP 200
+### DEFECT-2 — RESOLVED — a total EDGAR outage was reported as HTTP 200
 
-**Severity:** Medium
-**Files:** `apps/api/src/graph.ts` (freshness/fetch branch), `apps/api/src/server.ts` (status mapping)
-**Tests:** `tests/integration/resilience.test.ts` -> *"surfaces UPSTREAM_SEC_ERROR
-when EDGAR is down and there is nothing cached"* and *"maps a total EDGAR outage
-to 502 over HTTP, with a contract-valid body"*
+**Status:** fixed by the backend in `feat/backend` 83b1fba, independently
+verified here. `fetchFilings` now throws
+`AskError("UPSTREAM_SEC_ERROR", ...)` when the SEC calls hard-fail and the cache
+yields nothing usable, before `chunkAndEmbed` or `generateResearchQuestions` are
+scheduled; `server.ts` maps it to 502 with a contract-valid `ApiError` body.
 
-**Expected:** when `sec.getLatestAccession` and `sec.getFilingRefs` both reject
-and there is **no** cached research to fall back on, `runAsk` throws an
-`AskError` with `code: "UPSTREAM_SEC_ERROR"`, which `createApp` maps to 502 plus
-an `ApiError` body.
+Verified independently, not taken on trust: `runAsk` rejects with
+`code: "UPSTREAM_SEC_ERROR"`; `questionGen`, `subAgents`, `embed` and `upsert`
+call counts are all **0** on that path; a company that genuinely has no filings
+still returns 200 with `filings: []`; and the outage-with-warm-cache path is
+byte-for-byte unchanged and still passing. The zero-spend assertion is now a
+permanent regression guard in
+`tests/integration/resilience.test.ts`.
 
-**Actual:** `runAsk` resolves successfully. `POST /api/questions` returns **200**
-with a fully-formed `AskResponse`:
+---
 
-```json
-{ "filings": [],
-  "subAnswers": [ 3 entries, all "grounded": false ],
-  "cache": { "filingsReused": false, "reason": "cold-start", "lastAccession": null } }
+### DEFECT-3 — a partial EDGAR failure permanently poisons the research cache
+
+**Severity:** High
+**File:** `apps/api/src/graph.ts` (new-filings branch + `persistResearch`)
+**Tests:** `tests/integration/resilience.test.ts` -> *"partial EDGAR failure —
+accession readable, filing bodies not"* (3 failing)
+
+This is the residual window the backend engineer flagged and chose not to close.
+Having measured it, it is materially worse than "an ungrounded 200", and I think
+it now outranks DEFECT-1.
+
+**Setup:** `getLatestAccession` succeeds and reports a *new* accession, so the
+graph takes the new-filings branch; `getFilingRefs` then fails; usable prior
+research exists in the cache. (`tests/helpers/harness.ts` -> `failFilingFetch()`.)
+
+**Expected:** either serve the cached research, or fail with
+`UPSTREAM_SEC_ERROR`. Either way, do not record the new accession as researched.
+
+**Actual — three compounding problems:**
+
+1. **The response claims to be grounded when it is not, and is internally
+   inconsistent.** `filings: []`, yet all three sub-answers come back
+   `grounded: true`, citing accessions `…24-000123`, `…24-000081`,
+   `…24-000069` — retrieved from the *previous* run's vectors, which are still
+   sitting in the `AAPL` namespace. The summary headline reads
+   *"3 of 3 research questions grounded in SEC filings."* Every citation
+   references an accession that is absent from `filings`, so a frontend that
+   links a citation to its filing has nothing to link to.
+
+2. **It persists an accession it never fetched.** The cache record is written as
+   `lastAccession: "0000320193-25-000004"` with `filings: []` — claiming the new
+   10-Q was researched when nothing from it was ever fetched, embedded or read.
+
+3. **The damage is permanent, and this is the serious part.** Once EDGAR
+   recovers, the next request compares the (real) newest accession against the
+   poisoned `lastAccession`, finds them equal, and returns
+   `reason: "no-new-filings-reused"`, `filingsReused: true`, with **zero**
+   re-research — forever. Verified: after recovery, `embed`, `questionGen`,
+   `subAgents`, `filingFetch` are all 0 and `filings` stays empty. A transient
+   blip converts a self-healing condition into a permanent one; the new filing
+   is never ingested, and the ticker serves `filings: []` from then on. Only
+   manually clearing `.data/research` recovers it.
+
+**Reproduce:**
+
+```ts
+const h = await createHarness();
+await runAsk(req, h.deps);                     // warm cache, accession …24-000123
+h.setLatestAccession("0000320193-25-000004");  // a new filing appears
+h.failFilingFetch();                           // ...but its body can't be fetched
+await runAsk(req, h.deps);                     // 200, "3 of 3 grounded", filings: []
+(await h.cache.get("AAPL")).lastAccession;     // "0000320193-25-000004"  <-- poisoned
+// EDGAR recovers:
+(await runAsk(req, deps)).cache.reason;        // "no-new-filings-reused", 0 work done
 ```
 
-**Reproduce:** inject a `sec` stub whose `getLatestAccession` and
-`getFilingRefs` reject, with an empty cache directory, and POST a valid question
-(`tests/helpers/harness.ts` -> `failSec()`).
-
-**Why it matters:**
-
-1. **The outage is invisible to the client.** `filings: []` +
-   `reason: "cold-start"` + `lastAccession: null` is *exactly* the shape
-   returned for a company that has legitimately never filed. The frontend
-   cannot tell "EDGAR is down, offer a retry" from "there is nothing to show",
-   so it will render a permanent empty state during a transient outage.
-2. **It costs real money to say nothing.** The pipeline still runs
-   question-generation plus one sub-agent per question — 4 Anthropic calls per
-   request in this trace — to produce an answer it simultaneously labels
-   ungrounded. Under a sustained EDGAR outage that is unbounded spend on
-   worthless output.
-3. **`UPSTREAM_SEC_ERROR` becomes dead code.** It is in the frozen `ApiError`
-   enum and nothing in the system can produce it. A total outage with no
-   fallback is the one case it exists for.
-
-**To the backend's credit**, the *degraded* path is handled well: the narrative
-says "No filing passages could be retrieved, so the findings below are not
-grounded in filing text", every sub-answer is `grounded: false`, and the risks
-list says so per question. The prose is honest. The problem is purely that there
-is no **machine-readable** signal, and that the request is billed as a success.
-
-**Suggested fix:** in the Branch B fetch, if the SEC calls fail *and*
-`cache.get(ticker)` returns nothing usable, throw
-`new AskError("UPSTREAM_SEC_ERROR", ...)` before question-generation runs. The
-already-correct behaviour when a cache entry *does* exist should stay exactly as
-it is — that path is tested and passing.
+**Suggested fix, smallest first.** The cheap half fixes the permanence without
+touching the graph's routing, which is what the backend was rightly wary of:
+in `persistResearch`, refuse to write `lastAccession` when the filing fetch did
+not succeed — keep the previously cached accession, so the next request retries
+naturally. That alone downgrades this from permanent corruption to one bad
+response. The fuller fix — re-routing mid-branch to `loadCachedResearch` when
+`getFilingRefs` fails and usable research exists — can follow separately, and
+the invariant in point 1 (every cited accession must appear in `filings`) is
+worth asserting in the graph regardless of which route is taken.
 
 ---
 
