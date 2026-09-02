@@ -343,6 +343,21 @@ The test now asserts the full range, plus a companion test pinning that the
 fixture actually drives all three outcomes — a range assertion that only ever
 sees the unadjusted case passes for the wrong reason.
 
+Both bounds are **derived, not read off a distribution**: `safeBoundary` moves
+by at most +1 and never decreases, so the body is `size` or `size + 1` and can
+never come in short, and the prefix is `overlap` or `overlap - 1` and can never
+lose two. The backend then confirmed adversarially — 4647 cases of at least
+three chunks across four generators including all-astral and wide-plane text,
+sizes 2..122 with randomized overlap — that both bounds hold *and are reached*:
+`min(first - size) = 0` and `min(middle - size - overlap) = -1`. So they are
+tight rather than merely safe, which is worth knowing before anyone loosens
+them.
+
+The two claims are deliberately split across two tests because they have
+different lifetimes: the bound survives a fixture change, while "the fixture
+reaches the bound" is exactly what *should* break when someone edits the
+fixture.
+
 **Migration consequence, flagged and actioned:** lone surrogates had already
 reached the embedded text and the on-disk cache, so a cache written before the
 fix stays corrupt after it. The integrator versioned the cache directory to
