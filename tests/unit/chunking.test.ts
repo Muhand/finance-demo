@@ -152,11 +152,18 @@ describe("chunkText — unicode safety", () => {
     (_, i) => `📈${i} 研究開発費 🚀${i} café`,
   ).join(" ");
 
-  /** Longest k <= max where `next` starts with the last k chars of `prev`. */
+  /**
+   * Longest k <= max where `next` starts with the last k chars of `prev`.
+   * ALWAYS call this with headroom above the requested overlap: capping the
+   * search at `overlap` makes an over-large window read back as exactly
+   * `overlap`, which silently hides the one regression these tests exist to
+   * catch.
+   */
   const sharedWindow = (prev: string, next: string, max: number): number => {
     for (let k = max; k >= 0; k--) if (prev.endsWith(next.slice(0, k))) return k;
     return -1;
   };
+  const HEADROOM = 3;
 
   it("never loses or corrupts content on multi-byte (BMP) text", () => {
     const chunks = chunkText(bmpText, opts);
@@ -183,11 +190,20 @@ describe("chunkText — unicode safety", () => {
     }
   });
 
-  it("the overlap shortfall is at most one character, across several size/overlap pairs", () => {
-    // Retrieval quality depends on chunks genuinely sharing context. A boundary
-    // nudge costs at most one character; anything larger would silently thin
-    // the overlap without losing content, so `expectCoversLosslessly` would not
-    // catch it. Measured rather than assumed.
+  it("the shared window never exceeds the requested overlap, and falls short by at most one", () => {
+    // Two distinct properties, and the first is the load-bearing one.
+    //
+    // Boundary adjustment is forward-only: one uniform rule applied to both the
+    // chunk end and the overlap prefix start. That guarantees the window is
+    // never LARGER than the caller asked for. A backward-nudging variant is
+    // otherwise safe — it tiles correctly and leaves no lone surrogates — so it
+    // is a plausible tidy-up, and its only outward symptom is a window one
+    // character too large. That symptom is invisible to every other test here:
+    // `expectCoversLosslessly` passes either way.
+    //
+    // The shortfall bound is the second property: a nudge costs at most one
+    // character. A larger one would thin the retrieval overlap without losing
+    // content, which again nothing else would catch.
     const shortfalls: number[] = [];
     for (const [size, overlap] of [
       [100, 20],
@@ -196,30 +212,46 @@ describe("chunkText — unicode safety", () => {
     ] as const) {
       const chunks = chunkText(uniqueAstral, { size, overlap });
       for (let i = 1; i < chunks.length; i++) {
-        const k = sharedWindow(chunks[i - 1]!, chunks[i]!, overlap);
+        const k = sharedWindow(chunks[i - 1]!, chunks[i]!, overlap + HEADROOM);
         expect(k, `chunk ${i} shares no window at size=${size}`).toBeGreaterThanOrEqual(0);
+        expect(k, `chunk ${i} overlaps MORE than requested at size=${size}`)
+          .toBeLessThanOrEqual(overlap);
         shortfalls.push(overlap - k);
       }
     }
     expect(Math.max(...shortfalls)).toBeLessThanOrEqual(1);
     // Non-vacuity: boundaries really are being nudged in this fixture, so the
-    // assertion above is exercising the adjusted path, not just the clean one.
+    // assertions above exercise the adjusted path, not just the clean one.
     expect(shortfalls).toContain(1);
   });
 
-  it("stays lossless at overlap === 1, where the shared window can bottom out at zero", () => {
-    // `safeBoundary` only ever nudges FORWARD, so at overlap 1 a prefix start
-    // that lands inside a pair moves to the chunk start and the window becomes
-    // empty. That is overlap-1 bottoming out at 0, not a separate behaviour,
-    // and it is unreachable at the contract's 1800/200. Pinned so nobody
-    // "fixes" it by nudging backward, which would take the whole pair and make
-    // the window 2 — larger than the caller asked for.
+  it("holds the same window bounds at overlap === 1, where the window can bottom out at zero", () => {
+    // Forward-only nudging means that at overlap 1 a prefix start landing
+    // inside a pair moves to the chunk start, giving an empty prefix. That is
+    // the shortfall bottoming out at 0, not separate behaviour, and it is
+    // unreachable at the contract's 1800/200 — but it IS reachable through the
+    // public API, and it is where the backward variant diverges most visibly
+    // (window 2 for a requested overlap of 1).
     const chunks = chunkText(uniqueAstral, { size: 40, overlap: 1 });
-    const windows = chunks
-      .slice(1)
-      .map((c, i) => sharedWindow(chunks[i]!, c, 1));
-    expect(windows.every((w) => w === 0 || w === 1)).toBe(true);
+    const windows = chunks.slice(1).map((c, i) => sharedWindow(chunks[i]!, c, 1 + HEADROOM));
+    expect(Math.max(...windows), "window exceeds the requested overlap of 1").toBeLessThanOrEqual(1);
+    expect(Math.min(...windows)).toBeGreaterThanOrEqual(0);
     expectCoversLosslessly(chunks, uniqueAstral);
+  });
+
+  it("bounds chunk length on astral text, where both boundaries may be nudged", () => {
+    // The end boundary and the prefix start can each move forward by one, so
+    // the ASCII invariant (first chunk exactly `size`, others <= size+overlap)
+    // relaxes by exactly one character here. Measured, not assumed.
+    for (const [size, overlap] of [
+      [100, 20],
+      [64, 8],
+      [37, 5],
+    ] as const) {
+      const chunks = chunkText(uniqueAstral, { size, overlap });
+      expect(chunks[0]!.length).toBeLessThanOrEqual(size + 1);
+      for (const c of chunks) expect(c.length).toBeLessThanOrEqual(size + overlap + 1);
+    }
   });
 
   it("every chunk survives a UTF-8 round-trip — no chunk boundary corrupts a character", () => {

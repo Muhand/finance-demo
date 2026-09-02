@@ -11,7 +11,7 @@ Everything that would is injected (`Deps`) or stubbed in `tests/helpers/harness.
 ```
 pnpm --filter @finance-demo/tests test
   Test Files   12 passed (12)
-       Tests   129 passed (129)
+       Tests   130 passed (130)
 
 pnpm --filter @finance-demo/tests typecheck   ->  clean, 0 errors
 ```
@@ -26,7 +26,7 @@ value. Details in the defect log below.
 | contract | `contract/ask-request.test.ts` | 9 |
 | contract | `contract/ticker-directory.test.ts` | 6 |
 | contract | `contract/transport.test.ts` | 5 |
-| unit | `unit/chunking.test.ts` | 24 |
+| unit | `unit/chunking.test.ts` | 25 |
 | unit | `unit/tickers.test.ts` | 15 |
 | unit | `unit/embeddings.test.ts` | 9 |
 | unit | `unit/vectorstore.test.ts` | 8 |
@@ -297,8 +297,37 @@ distribution. Their measurement is now a permanent guard rather than a one-off:
   produce a 2-character window, larger than the caller asked for.
 
 QA measured a shortfall-1 rate of ~5% across its fixtures versus the backend's
-~30%; the difference is fixture astral-density, not a disagreement. Both agree
-the shortfall never reaches 2.
+~30%; the difference is fixture astral-density (theirs ~50% astral by
+construction, QA's interleaving ASCII and CJK for a more filing-like mix), not a
+disagreement. Both bound the shortfall at 1.
+
+**A correction worth recording, because the same trap caught QA twice.** The
+first version of both tests measured the shared window with the search capped at
+`overlap`. That cap makes a window *larger* than requested read back as exactly
+`overlap` — so both tests were blind to the one regression they were written to
+catch. The backend implemented the backward-nudging variant and property-tested
+it: it tiles correctly, leaves no lone surrogates and loses no content, so it is
+a plausible tidy-up rather than an obviously bad change, and its only outward
+symptom is a window one character too large. Measured against that variant:
+
+```
+fixed assertions   -> 18 over-large windows caught (max excess 1);
+                      window of 2 at overlap === 1
+previous, capped   -> 0 caught
+```
+
+The tests now search with headroom above the requested overlap and assert
+`window <= overlap` explicitly. The load-bearing property is *"the window never
+exceeds the requested overlap"* — not "backward nudging is unsafe", which the
+measurement shows would be wrong. What forward-only actually buys is a single
+uniform rule at both the chunk end and the prefix start; backward would need the
+two call sites to disagree about direction to keep the end boundary from
+stalling.
+
+A chunk-length bound on astral text was added alongside: both boundaries can
+move forward by one, so the ASCII invariant relaxes to `size + overlap + 1`
+(first chunk `size + 1`). Measured, not assumed — the observed maximum is
+exactly `size + overlap + 1`.
 
 **Migration consequence, flagged and actioned:** lone surrogates had already
 reached the embedded text and the on-disk cache, so a cache written before the
